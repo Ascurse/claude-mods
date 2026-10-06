@@ -377,10 +377,11 @@ export const register: Register = on => {
     )
     // Two columns, filled down then across: 1-3 left, 4-6 right.
     const half = Math.ceil(list.length / 2)
+    // Полосы других модов (bead-band) — отдельной строкой сверху: в одной строке они отнимали ширину у шагов
     return (
-      <Box flexDirection="row" alignItems="center" gap={1}>
-        {/* Shrinks and clips if ever too wide, so the right side is never pushed off. */}
-        <Box flexDirection="column" alignItems="flex-start" gap={1} flexShrink={1} minWidth={0} overflow="hidden">
+      <Box flexDirection="column" alignItems="stretch" gap={1}>
+        <Box>{inner}</Box>
+        <Box flexDirection="column" alignItems="flex-start" gap={1} minWidth={0} overflow="hidden">
           <Box flexDirection="row" alignItems="flex-start" columnGap={2}>
             <Box flexDirection="column" alignItems="flex-start" gap={1}>
               {list.slice(0, half).map((s, i) => item(s, i))}
@@ -414,7 +415,6 @@ export const register: Register = on => {
             )}
           </Box>
         </Box>
-        <Box flexGrow={1} flexShrink={0}>{inner}</Box>
       </Box>
     )
   })

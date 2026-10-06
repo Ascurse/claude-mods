@@ -73,3 +73,10 @@ test('a long Russian label is shown whole, up to 70 characters', async ($, on) =
   expect((await ui.find({ type: 'Button', text: /Проверить/ }))?.props.label).toBe(`○ ${label}`)
   await ui.unmount()
 })
+
+test('steps get their own row: another mod\'s band goes on a separate line, not beside the steps', async ($, on) => {
+  const ui = await mountWithSuggestions($, on, 'terminal')
+  const root = await ui.find({ type: 'Box' })
+  expect(root?.props.flexDirection).toBe('column')
+  await ui.unmount()
+})
