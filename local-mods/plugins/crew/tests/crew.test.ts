@@ -15,7 +15,7 @@ import {
   wordPicks,
 } from '../hooks/crew'
 import type { CatalogEntry, Crew, CrewRow } from '../hooks/crew'
-import { parseConfig } from '../hooks/core'
+import { parseConfig } from '../hooks/util'
 import type { ModelAnswer } from './crew-rig'
 import {
   CATALOG,
@@ -169,12 +169,10 @@ test('setPhase is pure: a new object, only that row changes', () => {
   expect(setPhase(crew, 'nobody', 'started').rows).toEqual(rows) // unknown agent: rows unchanged
 })
 
-test('crew is one of the default panels, last, and a config can drop it', () => {
-  const d = parseConfig({})
-  expect(d.panels).toContain('crew')
-  expect(d.panels.length).toBe(8)
-  expect(parseConfig({ panels: 'main,log' }).panels).toEqual(['main', 'log'])
-  expect(parseConfig({ panels: 'main,crew,log' }).panels).toEqual(['main', 'crew', 'log'])
+test('config is read leniently: draft, theme palette and auto open by default', () => {
+  expect(parseConfig({})).toEqual({ crewRun: 'draft', palette: 'theme', autoOpen: true })
+  expect(parseConfig({ crewRun: 'direct', palette: 'pastel', autoOpen: false })).toEqual({ crewRun: 'direct', palette: 'pastel', autoOpen: false })
+  expect(parseConfig({ crewRun: 'sideways', palette: 7, autoOpen: 'no' })).toEqual({ crewRun: 'draft', palette: 'theme', autoOpen: true })
 })
 
 // ---------------------------------------------------------------- engine: what the panel shows
@@ -416,7 +414,7 @@ for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...pane(86), surface })
     await ui.press({ key: `crew-run-${FIRST}` })
     await ui.press({ key: `crew-edit-${FIRST}` })
-    expect(r.opens).toEqual([{ id: 'crew-edit', focus: true, closeOnEscape: true }])
+    expect(r.opens.filter(o => o.id === 'crew-edit')).toEqual([{ id: 'crew-edit', focus: true, closeOnEscape: true }])
     expect(r.submits.length).toBe(0)
     expect(await ui.find({ text: DRAFT })).toBeDefined() // the row keeps its draft until a new text is submitted
     expect(await ui.find({ key: `crew-start-${FIRST}` })).toBeDefined()
@@ -436,7 +434,7 @@ for (const surface of SURFACES) {
     await ui.press({ key: `crew-run-${FIRST}` })
     await ui.press({ key: `crew-edit-${FIRST}` })
     const edit = await $.ui.mount({ ...pane(60, 'crew-edit'), surface })
-    await $.ui.input({ plugin: 'flightdeck', key: `crew-edit-input-${FIRST}`, text: EDITED, surface, requestId: 'crew-edit' })
+    await $.ui.input({ plugin: 'crew', key: `crew-edit-input-${FIRST}`, text: EDITED, surface, requestId: 'crew-edit' })
     expect(r.closes).toEqual(['crew-edit'])
     expect(await ui.find({ text: EDITED })).toBeDefined()
     expect(await ui.find({ text: DRAFT })).toBeUndefined()
@@ -458,7 +456,7 @@ for (const surface of SURFACES) {
     for (const text of texts) {
       await ui.press({ key: `crew-edit-${FIRST}` })
       const edit = await $.ui.mount({ ...pane(60, 'crew-edit'), surface })
-      await $.ui.input({ plugin: 'flightdeck', key: `crew-edit-input-${FIRST}`, text, surface, requestId: 'crew-edit' })
+      await $.ui.input({ plugin: 'crew', key: `crew-edit-input-${FIRST}`, text, surface, requestId: 'crew-edit' })
       await edit.unmount()
     }
     const history = r.store.get('crew.editHistory') as Record<string, string[]>
@@ -489,7 +487,7 @@ for (const surface of SURFACES) {
     await ui.press({ key: `crew-run-${FIRST}` })
     await ui.press({ key: `crew-edit-${FIRST}` })
     const edit = await $.ui.mount({ ...pane(60, 'crew-edit'), surface })
-    await $.ui.input({ plugin: 'flightdeck', key: `crew-edit-input-${FIRST}`, text: '   ', surface, requestId: 'crew-edit' })
+    await $.ui.input({ plugin: 'crew', key: `crew-edit-input-${FIRST}`, text: '   ', surface, requestId: 'crew-edit' })
     expect(await ui.find({ text: DRAFT })).toBeDefined()
     expect(r.store.get('crew.editHistory')).toBeUndefined()
     await edit.unmount()
@@ -552,7 +550,7 @@ for (const surface of SURFACES) {
     for (const k of ['start', 'edit', 'drop']) expect(await ui.find({ key: `crew-${k}-${FIRST}` })).toBeUndefined()
     expect(await ui.find({ key: `crew-run-${FIRST}` })).toBeDefined()
     expect(r.submits.length).toBe(0)
-    expect(r.opens.length).toBe(0)
+    expect(r.opens.filter(o => o.id === 'crew-edit').length).toBe(0)
     await ui.unmount()
   })
 
@@ -621,26 +619,51 @@ for (const surface of SURFACES) {
 // ---------------------------------------------------------------- the rest of the pane still draws
 
 for (const surface of SURFACES) {
-  test(`${surface}: the existing panels still draw beside CREW`, async ($, on) => {
+  test(`${surface}: the crew pane draws only CREW, none of flightdeck's panels`, async ($, on) => {
     const r = rig(on)
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
-    expect(await ui.find({ text: /· main$/ })).toBeDefined()
-    expect(await ui.find({ text: /session log/ })).toBeDefined()
     expect(await ui.find({ text: /CREW/ })).toBeDefined()
-    expect(await ui.find({ text: /agents ·/ })).toBeUndefined() // no subagents yet
-    await ui.unmount()
-  })
-
-  test(`${surface}: a config without crew in panels hides it though a prompt and a catalog exist`, { options: { panels: 'main,log' } }, async ($, on) => {
-    const r = rig(on)
-    await ready($, r)
-    const ui = await $.ui.mount({ ...pane(86), surface })
-    expect(await ui.find({ text: /· main$/ })).toBeDefined()
-    expect(await ui.find({ text: /CREW/ })).toBeUndefined()
+    expect(await ui.find({ text: /· main$/ })).toBeUndefined()
+    expect(await ui.find({ text: /session log/ })).toBeUndefined()
     await ui.unmount()
   })
 }
+
+const START = { cwd: '/work/project', surface: 'terminal', isInteractive: true } as const
+
+// пустой CREW места не занимает: панель открывается с первой подсказкой, а не на старте сессии
+test('session start opens no pane', async ($, on) => {
+  const r = rig(on)
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  await $.session.start(START)
+  await r.settle()
+  expect(r.opens.length).toBe(0)
+})
+
+test('the first prompt with a catalog opens the pane', async ($, on) => {
+  const r = rig(on, { jev: () => ({ exitCode: 0, stdout: jevStdout(JEV_FIVE) }) })
+  await offerAll($)
+  await $.turn.start({ text: QUERY, turnId: 'T-open' })
+  await r.settle()
+  expect(r.opens.map(o => o.id)).toEqual(['crew'])
+})
+
+test('a prompt without a catalog opens no pane', async ($, on) => {
+  const r = rig(on)
+  await $.turn.start({ text: QUERY, turnId: 'T-nocat-open' })
+  await r.settle()
+  expect(r.opens.length).toBe(0)
+})
+
+test('autoOpen false keeps the pane closed when suggestions arrive', { options: { autoOpen: false } }, async ($, on) => {
+  const r = rig(on, { jev: () => ({ exitCode: 0, stdout: jevStdout(JEV_FIVE) }) })
+  await offerAll($)
+  await $.turn.start({ text: QUERY, turnId: 'T-noauto' })
+  await r.settle()
+  expect(r.opens.length).toBe(0)
+})
 
 // ---------------------------------------------------------------- spawnRequest
 

@@ -58,14 +58,14 @@ if command -v bd >/dev/null 2>&1; then
 fi
 # --- END BEADS INTEGRATION v1.3.1 ---
 
-# flightdeck: пример draftRequest в README должен совпадать с кодом (claude-3na, claude-8sq).
+# crew: пример draftRequest в README должен совпадать с кодом (claude-3na, claude-8sq).
 # Проверяется индекс, а не диск: файлы плагина выгружаются из индекса во временный каталог,
 # так что частично застейдженный файл сверяется ровно в том виде, в каком уйдёт в коммит.
 # Запускается на любом .ts в hooks/, types/, scripts/ и на README: draftRequest зависит от их импортов.
-_fd=local-mods/plugins/flightdeck
+_fd=local-mods/plugins/crew
 if git diff --cached --name-only | grep -qE "^$_fd/((hooks|types|scripts)/.*\.tsx?|README\.md)$"; then
   if ! command -v bun >/dev/null 2>&1; then
-    echo >&2 "flightdeck: для проверки README нужен bun (https://bun.sh)"
+    echo >&2 "crew: для проверки README нужен bun (https://bun.sh)"
     exit 1
   fi
   _fd_tmp=$(mktemp -d) || exit 1

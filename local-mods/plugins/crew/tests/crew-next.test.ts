@@ -105,7 +105,7 @@ for (const surface of SURFACES) {
     expect(r.submits.length).toBe(0)
   })
 
-  test(`${surface}: a queued agent whose request is dropped leaves an error line in the log`, async ($, on) => {
+  test(`${surface}: a queued agent whose request is dropped leaves an error toast`, async ($, on) => {
     const r = rig(on, { submit: () => ({ drop: 'no capacity' }) })
     await readyNext($, r, on)
     const ui = await $.ui.mount({ ...pane(86), surface })
@@ -113,7 +113,7 @@ for (const surface of SURFACES) {
     await $.turn.start({ text: OTHER_QUERY, turnId: 'T-deny' })
     await r.settle()
     expect(r.submits.length).toBe(1)
-    expect(await ui.find({ text: /no capacity/ })).toBeDefined()
+    expect(r.toasts.some(t => /no capacity/.test(t))).toBe(true)
     await ui.unmount()
   })
 }
