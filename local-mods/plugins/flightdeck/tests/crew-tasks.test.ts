@@ -1,4 +1,6 @@
+import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 
 import { NO_TASK, PLAN_MAX, TASK_MAX, catalogHash, draftRequest, parseTaskAnswer, taskRequest } from '../hooks/crew'
 import type { TaskInfo } from '../hooks/crew'
@@ -313,6 +315,50 @@ for (const surface of SURFACES) {
     await ui.unmount()
   })
 }
+
+/** Ответ Haiku, где у первого агента свой plan, а у остальных — из PLANS. */
+const answerWithPlan = (plan: unknown) => (): ModelAnswer => ({
+  isAnswered: true,
+  text: JSON.stringify({ ...INFOS, [FIRST]: { task: TASKS[FIRST], plan } }),
+})
+
+/** Строка плана в запросе черновика после run первого агента; undefined, если её нет. */
+const planLineAfterRun = async ($: Engine, on: On, plan: unknown) => {
+  const r = rig(on, { task: answerWithPlan(plan) })
+  await ready($, r)
+  const ui = await $.ui.mount({ ...pane(86), surface: 'terminal' })
+  await ui.press({ key: `crew-run-${FIRST}` })
+  await ui.unmount()
+  expect(r.completes.length).toBe(1)
+  const prompt = r.completes[0]?.prompt ?? ''
+  expect(prompt).toContain(TASKS[FIRST] as string)
+  return prompt.split('\n').find(l => /first steps/i.test(l))
+}
+
+for (const [name, plan] of [['an empty plan', ''], ['a whitespace-only plan', ' \n\t '], ['a non-string plan', 42]] as const) {
+  test(`run on a row with ${name} sends the task and no plan line`, async ($, on) => {
+    expect(await planLineAfterRun($, on, plan)).toBeUndefined()
+  })
+}
+
+test('run sends a plan with nested steps as one line, every step kept in order', async ($, on) => {
+  const nested = '1. Run tsc on the parser\n   - first the lexer\n   - then the AST\n2. Read the diff'
+  const line = await planLineAfterRun($, on, nested)
+  expect(line?.endsWith(': 1. Run tsc on the parser - first the lexer - then the AST 2. Read the diff')).toBe(true)
+})
+
+test('run sends a plan of exactly PLAN_MAX characters whole', async ($, on) => {
+  const full = `${'p'.repeat(PLAN_MAX - 1)}Z`
+  const line = await planLineAfterRun($, on, full)
+  expect(line?.endsWith(`: ${full}`)).toBe(true)
+})
+
+test('run sends a longer plan cut to PLAN_MAX characters', async ($, on) => {
+  const head = 'q'.repeat(PLAN_MAX)
+  const line = await planLineAfterRun($, on, `${head}TAIL`)
+  expect(line?.endsWith(`: ${head}`)).toBe(true)
+  expect(line).not.toContain('TAIL')
+})
 
 test('a repeated query makes no tasks call', async ($, on) => {
   const r = rig(on, { task: answerTasks })
