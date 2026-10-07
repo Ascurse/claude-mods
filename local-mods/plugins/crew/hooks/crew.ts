@@ -98,6 +98,29 @@ export const rowsFor = (picks: readonly string[], catalog: readonly CatalogEntry
     return e ? [{ agent, description: e.description, phase: 'idle' as const, draft: null, error: null }] : []
   })
 
+/** Сколько знаков конца последнего ответа модели идёт в запрос ручного обновления. */
+export const CONTEXT_TAIL = 400
+
+type TranscriptMessage = { role: 'user' | 'assistant'; text: string }
+
+/** Отчёт фонового агента и служебные строки команд — не запрос человека. */
+const isPrompt = (m: TranscriptMessage) => m.role === 'user' && m.text.trim() !== '' && !/^\s*<(agent-message|command-|local-command-)/.test(m.text)
+
+/**
+ * Запрос ручного обновления: последний промпт человека и хвост последнего ответа после него.
+ * Без промпта в переписке — fallback.
+ */
+export const contextQuery = (messages: readonly TranscriptMessage[], fallback: string): string => {
+  const at = messages.findLastIndex(isPrompt)
+  if (at < 0) return fallback
+  const prompt = messages[at]!.text.trim()
+  const reply = messages.slice(at + 1).findLast(m => m.role === 'assistant' && m.text.trim() !== '')
+  if (!reply) return prompt
+  const flat = reply.text.replace(/\s+/g, ' ').trim()
+  const tail = flat.length > CONTEXT_TAIL ? `…${flat.slice(-CONTEXT_TAIL).trimStart()}` : flat
+  return `${prompt}\n\nLatest reply: ${tail}`
+}
+
 export const draftRequest = (e: CatalogEntry, ctx: { query: string; cwd: string; task?: string | null; plan?: string | null }) => ({
   model: 'haiku',
   maxTokens: 600,

@@ -2,13 +2,14 @@
 
 A Claude Code mod that suggests which of the session's agents fit your request, has Haiku draft the task prompt, and starts the agent in the background. It was the CREW panel of [flightdeck](../flightdeck/README.md) and now has its own pane.
 
-The pane opens with the first suggestion for a prompt (option `autoOpen`), not at session start, and shows the 5 agents that fit the current request, picked from every agent the session offers, narrowed by topic tags (`5 of 38 · jev · frontend, testing`) once the catalog is tagged. Beside each name is Haiku's one-line task for that agent, or `нет задачи` when Haiku gave none; under the name, one dim line (at most 160 characters) with a short draft of how the agent would start, until `run` replaces it with the full prompt. `run` (a framed button) has Haiku write the agent's prompt; the draft stays under the row with `start` (ask the main model to start it in the background), `edit` (a focused pane; Enter saves, Escape leaves it as it was) and `drop`. The header says `· jev` or `· by words`. An empty pane draws nothing.
+The pane opens with the first suggestion for a prompt (option `autoOpen`), not at session start, and shows the 5 agents that fit the current request, picked from every agent the session offers, narrowed by topic tags (`5 of 38 · jev · frontend, testing`) once the catalog is tagged. Beside each name is Haiku's one-line task for that agent, or `нет задачи` when Haiku gave none; under the name, one dim line (at most 160 characters) with a short draft of how the agent would start, until `run` replaces it with the full prompt. `run` (a framed button) has Haiku write the agent's prompt; the draft stays under the row with `start` (ask the main model to start it in the background), `edit` (a focused pane; Enter saves, Escape leaves it as it was) and `drop`. The header says `· jev` or `· by words`, and ends with `↻`: it picks the crew again for where the conversation is now (your last prompt plus the end of Claude's last reply), skipping the cache. Rows you are working with (a draft, `writing`, `started`, `queued`) stay on top; the new picks fill the free places, 5 rows at most. In the next mode `↻` picks again for the same guess and keeps the queue. While Crew loads, `↻` is dim. An empty pane draws nothing, unless you opened it with `/crew`: then it shows the header with `↻`.
 
 ## Use
 
 | Command | Does |
 | --- | --- |
 | `/crew` | open the pane |
+| `/crew refresh` | same as `↻`: pick the crew again for the current conversation |
 | `/crew close` | close it |
 | `/crew reset` | clear the picked crew and drafts |
 
@@ -71,10 +72,11 @@ When you send your next prompt, Haiku writes each queued agent's task from that 
 
 ## What it can reach
 
-Crew never denies, rewrites or delays a tool call, a prompt or a subagent. It reads the agent catalog (`agent.offer`), your prompts (`turn.start`) and Claude Code's guess at your next prompt (`prompt.suggest`). It makes no network requests of its own; the model calls below go through `jev` and `$.model.complete`.
+Crew never denies, rewrites or delays a tool call, a prompt or a subagent. It reads the agent catalog (`agent.offer`), your prompts (`turn.start`), Claude Code's guess at your next prompt (`prompt.suggest`) and, on `↻` or `/crew refresh` only, the conversation (`$.session.messages()`) for your last prompt and the end of the last reply. It makes no network requests of its own; the model calls below go through `jev` and `$.model.complete`.
 
 - on each of your prompts it writes the agent catalog (names and descriptions) as `$TMPDIR/crew/<agent>/SKILL.md` and runs `jev pick-skill` on it, which sends your prompt to Jev; when `jev` is missing or fails, the pane falls back to word match;
 - after each turn, Claude Code's guess at your next prompt goes through the same jev and Haiku steps, to pick the next crew;
+- `↻` and `/crew refresh` send your last prompt and the last 400 characters of Claude's reply through the same jev and Haiku steps, without reading the cache;
 - every prompt also sends the query, the working directory and the 5 agents' descriptions to Haiku in one call, for the one-line tasks beside the names and the short drafts under them;
 - once per catalog, Haiku also gets the agent names and descriptions (about 50 per call) to tag them by topic; the tags narrow the list, and jev picks the tags of your prompt;
 - `run` calls Haiku with your prompt, the working directory, the agent's description and its one-line task;
