@@ -3,6 +3,9 @@
 ## Unreleased
 
 - `bun scripts/readme-draft.ts` checks that the README's example of the `run` request matches `draftRequest` in `hooks/crew.ts` and fails if it doesn't; `--write` refreshes the example. The repo's pre-commit hook runs it when either file is staged. The plugin itself is unchanged.
+- The pre-commit hook checks the staged versions of the plugin's files, not the working tree, so a partly staged file is checked exactly as it will be committed.
+- The check's logic lives in `scripts/readme-draft-core.ts` and is covered by `tests/readme-draft.test.ts`; `tsc` now type-checks `scripts/` too.
+- Removed stale compiled `.js` copies from `hooks/` and `tests/`; Claude Code loads `register.tsx` directly.
 
 ## 0.5.0
 
