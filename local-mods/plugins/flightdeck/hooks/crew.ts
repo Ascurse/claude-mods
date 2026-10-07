@@ -180,6 +180,8 @@ export const pushHistory = (history: Record<string, string[]>, agent: string, te
 // ---------------------------------------------------------------- одна строка-задача на агента
 
 export const TASK_MAX = 120
+/** Пометка вместо задачи, когда Haiku её не дал. */
+export const NO_TASK = 'нет задачи'
 
 /** Один запрос Haiku на всю пятёрку: что каждый агент сделал бы по этому запросу. */
 export const taskRequest = (entries: readonly CatalogEntry[], ctx: { query: string; cwd: string }) => ({

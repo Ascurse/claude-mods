@@ -60,6 +60,7 @@ import {
   CREW_SIZE,
   DEFAULT_CREW,
   FILTERED_TOP_K,
+  NO_TASK,
   TAGS,
   TAG_TOP_K,
   catalogHash,
@@ -1315,14 +1316,9 @@ export const register: Register = (on, options) => {
                       <Text dimColor wrap="truncate">
                         {row.task}
                       </Text>
-                    ) : cr.isTasking ? (
-                      <Text color={C.faint}>…</Text>
-                    ) : null}
-                  </Box>
-                  <Box display="none" position="absolute" top={1} left={nameW} hover={{ display: 'flex' }}>
-                    <Text dimColor wrap="wrap">
-                      {row.description}
-                    </Text>
+                    ) : (
+                      <Text color={C.faint}>{cr.isTasking ? '…' : NO_TASK}</Text>
+                    )}
                   </Box>
                   {(row.phase === 'draft' || row.phase === 'started') && row.draft ? (
                     <Text wrap="wrap" dimColor={row.phase === 'started'}>
