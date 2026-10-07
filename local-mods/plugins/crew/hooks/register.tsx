@@ -26,13 +26,13 @@ import {
   spawnRequest,
   tagBatches,
   tagFile,
-  tagHeader,
   tagRequest,
   taskRequest,
   wordPicks,
 } from './crew'
 import type { CrewMode, CrewRow, RowPhase, Tag, TaskInfo } from './crew'
 import { getJev, getTasks, jevKey, jevScope, putJev, putTasks, taskKey } from './cache/jev'
+import { busyRows, headerText } from './rows'
 import { PALETTES, handbackOf, listOf, normalize, parseConfig } from './util'
 import type { Config } from './util'
 
@@ -254,11 +254,6 @@ async function loadTasks($: EngineInterface, query: string, entries: CatalogEntr
     if (crewMemo.lastQuery === query) await update($, crew, c => ({ ...normalizeCrew(c), isTasking: false }))
   }
 }
-
-const BUSY_PHASES: ReadonlySet<RowPhase> = new Set(['draft', 'writing', 'started', 'queued'])
-
-/** Строки, с которыми человек уже работает: ручное обновление их не трогает. */
-const busyRows = (rows: CrewRow[]) => rows.filter(r => BUSY_PHASES.has(r.phase))
 
 /** isManual: ↻ или /crew refresh — мимо кэша, занятые строки остаются сверху, новые занимают свободные места. */
 async function refreshCrew($: EngineInterface, query: string, mode: CrewMode = 'now', { isManual = false } = {}) {
@@ -558,12 +553,7 @@ export const register: Register = (on, options) => {
     // ---- crew: рядов всегда по два (имя и описание, действия), у загрузки те же ячейки без кнопок
     const crewPanel = () => {
       const nameW = Math.min(22, Math.max(12, Math.floor((w - 4) / 3)))
-      const headerText = (): string => {
-        if (cr.isLoading) return `… of ${cr.total}`
-        if (cr.rows.length === 0) return `0 of ${catalog.size}`
-        return tagHeader(cr.rows.length, cr.total, cr.by, cr.tags ?? [])
-      }
-      const header = headerText()
+      const header = headerText(cr, catalog.size)
       const actions = (row: CrewRow) => {
         const isQueued = row.phase === 'queued'
         if (cr.mode === 'next' || isQueued) {
