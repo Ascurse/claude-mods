@@ -1,8 +1,12 @@
 # Changelog
 
+## 0.4.5
+
+- `run` now sends the short draft shown under the agent name to Haiku together with the one-line task, so the full prompt starts with the same first steps the row promised. Still one Haiku call per `run`; a row without a short draft sends nothing extra.
+
 ## 0.4.4
 
-- Before `run`, each crew row shows a short draft under the agent name: one dim line, cut to the pane width, on how the agent would start. It comes from the same single Haiku call as the one-line tasks, so the number of calls does not change; the draft written by `run` replaces it. The task cache moves to a new key, so tasks cached by 0.4.3 are asked again once.
+- Before `run`, each crew row shows a short draft under the agent name: one dim line of at most 160 characters, cut to the pane width, on how the agent would start. It comes from the same single Haiku call as the one-line tasks, so the number of calls does not change; the draft written by `run` replaces it. If Haiku fails or answers without drafts, the row keeps its name and task line and simply has no draft line. The task cache moves to a new key, so tasks cached by 0.4.3 are asked again once. Checked live in the desktop app as well as in the tests for terminal and desktop.
 
 ## 0.4.3
 

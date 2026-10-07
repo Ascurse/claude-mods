@@ -103,6 +103,16 @@ test('draftRequest passes the one-line task as extra context, and is unchanged w
   expect(plain.prompt).not.toContain('Check the lexer')
 })
 
+test('draftRequest passes the plan shown under the name, and adds nothing without it', () => {
+  const e = entry('x', 'does x')
+  const taskOnly = draftRequest(e, { query: 'q', cwd: '/w', task: 'Check the lexer' })
+  expect(draftRequest(e, { query: 'q', cwd: '/w', task: 'Check the lexer', plan: null })).toEqual(taskOnly)
+  expect(taskOnly.prompt).not.toMatch(/first steps/i)
+  const withPlan = draftRequest(e, { query: 'q', cwd: '/w', task: 'Check the lexer', plan: 'Starts with tsc' })
+  expect(withPlan.prompt).toContain('Starts with tsc')
+  expect(withPlan.prompt).toMatch(/first steps/i)
+})
+
 test('the task cache keeps fifty entries, drops the oldest, and tolerates a damaged value', async () => {
   const store = fakeStore()
   for (let i = 0; i < TASK_LIMIT + 1; i++) await putTasks(store, `k${i}`, { a: { task: `t${i}`, plan: null } })
@@ -279,6 +289,30 @@ test('run passes the one-line task into the draft request as extra context', asy
   expect(await ui.find({ text: DRAFT })).toBeDefined()
   await ui.unmount()
 })
+
+for (const surface of SURFACES) {
+  test(`${surface}: run passes the plan shown under the name into the one draft call`, async ($, on) => {
+    const r = rig(on, { task: answerTasks })
+    await ready($, r)
+    const ui = await $.ui.mount({ ...pane(86), surface })
+    await ui.press({ key: `crew-run-${FIRST}` })
+    expect(r.completes.length).toBe(1)
+    expect(r.completes[0]?.prompt).toContain(PLANS[FIRST] as string)
+    expect(r.completes[0]?.prompt).not.toContain(PLANS[JEV_FIVE[1] as string] as string)
+    await ui.unmount()
+  })
+
+  test(`${surface}: run on a row without a plan sends no plan line`, async ($, on) => {
+    const r = rig(on, { task: answerOldTasks })
+    await ready($, r)
+    const ui = await $.ui.mount({ ...pane(86), surface })
+    await ui.press({ key: `crew-run-${FIRST}` })
+    expect(r.completes.length).toBe(1)
+    expect(r.completes[0]?.prompt).toContain(TASKS[FIRST] as string)
+    expect(r.completes[0]?.prompt).not.toMatch(/first steps/i)
+    await ui.unmount()
+  })
+}
 
 test('a repeated query makes no tasks call', async ($, on) => {
   const r = rig(on, { task: answerTasks })
