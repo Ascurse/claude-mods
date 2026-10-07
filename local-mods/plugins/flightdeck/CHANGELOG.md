@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1
+
+- `run` no longer spawns the agent itself. In auto mode the engine does not call a plugin's own hooks on its own `$.agent.spawn`, so the permission workaround from 0.6.0 never ran and the classifier still refused. `run` (and the queued agents of next mode) now sends the main model one request through `$.prompt.submit`: start these subagents with the Agent tool, in the background, with each task text verbatim. The model makes the Agent call, so the classifier sees a request. The row is `started` once the request is submitted; the agent card appears when the model starts it.
+- Removed the permission workaround (`ownSpawns`, `ownSpawnIndex`, `ownVerdict`); `tool.check` only records checks now.
+
 ## 0.6.0
 
 - Crew has two modes. **now**, as before: the crew is picked for the prompt you just sent, and `run` starts an agent beside the main work. **next**, new: when a turn ends and Claude Code guesses your next prompt (the dim suggestion in the prompt box), the crew is picked for that guess. Each row has a `next` button that queues the agent (`queued`; press again to take it off). When you send your next prompt, Haiku writes each queued agent's task from that real prompt, not from the guess, and the agent starts; the panel goes back to now. Taking the guess word for word starts the queue too. A guess never replaces a draft you have open or a queue you already made. With prompt suggestions turned off there is no next list.

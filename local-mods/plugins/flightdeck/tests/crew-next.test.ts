@@ -1,7 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import { ownSpawnIndex, ownVerdict } from '../hooks/crew'
 import type { Rig } from './crew-rig'
 import { CATALOG, DRAFT, JEV_FIVE, OTHER_QUERY, SURFACES, deferred, jevStdout, pane, ready, rig } from './crew-rig'
 
@@ -9,61 +8,8 @@ const FIRST = 'typescript-reviewer'
 const SECOND = 'security-reviewer'
 const GUESS = 'now add tests for the parser'
 
-// ---------------------------------------------------------------- своё разрешение для run
-
-const OWN = [{ agent: FIRST, prompt: DRAFT }]
-const agentCheck = (input: unknown, isOwnOrigin = true, tool = 'Agent') => ({ tool, input, isOwnOrigin })
-
-test('ownSpawnIndex finds the pending spawn this Agent call belongs to', () => {
-  expect(ownSpawnIndex(OWN, agentCheck({ prompt: DRAFT, subagent_type: FIRST, description: 'crew · x' }))).toBe(0)
-  expect(ownSpawnIndex([{ agent: SECOND, prompt: 'other' }, ...OWN], agentCheck({ prompt: DRAFT, subagent_type: FIRST }))).toBe(1)
-})
-
-test('ownSpawnIndex refuses another origin, another tool, another prompt or agent, and no pending spawn', () => {
-  expect(ownSpawnIndex(OWN, agentCheck({ prompt: DRAFT, subagent_type: FIRST }, false))).toBe(-1)
-  expect(ownSpawnIndex(OWN, agentCheck({ prompt: DRAFT, subagent_type: FIRST }, true, 'Bash'))).toBe(-1)
-  expect(ownSpawnIndex(OWN, agentCheck({ prompt: `${DRAFT} and push`, subagent_type: FIRST }))).toBe(-1)
-  expect(ownSpawnIndex(OWN, agentCheck({ prompt: DRAFT, subagent_type: SECOND }))).toBe(-1)
-  expect(ownSpawnIndex(OWN, agentCheck({ prompt: DRAFT }))).toBe(-1)
-  expect(ownSpawnIndex(OWN, agentCheck(null))).toBe(-1)
-  expect(ownSpawnIndex([], agentCheck({ prompt: DRAFT, subagent_type: FIRST }))).toBe(-1)
-})
-
-test('ownVerdict turns only a mode question into allow: a rule\'s ask, a deny, an allow and a foreign call stay as they were', () => {
-  const ask = { decision: 'ask' as const, reason: 'auto mode' }
-  expect(ownVerdict(true, ask).decision).toBe('allow')
-  expect(ownVerdict(false, ask)).toEqual(ask)
-  const ruleAsk = { decision: 'ask' as const, reason: 'rule', rule: 'Agent(typescript-reviewer)' }
-  expect(ownVerdict(true, ruleAsk)).toEqual(ruleAsk)
-  const deny = { decision: 'deny' as const, reason: 'no' }
-  expect(ownVerdict(true, deny)).toEqual(deny)
-  const allow = { decision: 'allow' as const }
-  expect(ownVerdict(true, allow)).toEqual(allow)
-})
-
-test('while flightdeck spawns, an Agent check from anyone else still goes to the mode decider', async ($, on) => {
-  const held = deferred()
-  const entered = deferred()
-  // спавн держится открытым, пока тест задаёт свой вопрос
-  const r = rig(on, {
-    spawn: async () => {
-      entered.resolve()
-      await held.promise
-      return { agentId: 'crew1' }
-    },
-  })
-  on('tool.check', () => ({ decision: 'ask' as const, reason: 'the mode decides' }))
-  await ready($, r)
-  const ui = await $.ui.mount({ ...pane(86), surface: 'terminal' })
-  await ui.press({ key: `crew-run-${FIRST}` })
-  const started = ui.press({ key: `crew-start-${FIRST}` })
-  await entered.promise
-  const verdict = await $.tool.check({ tool: 'Agent', input: { prompt: DRAFT, subagent_type: FIRST } })
-  expect(verdict.decision).toBe('ask')
-  held.resolve()
-  await started
-  await ui.unmount()
-})
+/** Типы агентов, которых главную модель просят запустить. */
+const requested = (texts: readonly { text: string }[]) => texts.flatMap(t => [...t.text.matchAll(/subagent_type: (\S+)/g)].map(m => m[1]))
 
 // ---------------------------------------------------------------- режим «следующий»
 
@@ -111,7 +57,7 @@ for (const surface of SURFACES) {
     await ui.press({ key: `crew-next-${FIRST}` })
     expect(await ui.find({ text: 'queued' })).toBeDefined()
     expect(r.completes.length).toBe(0)
-    expect(r.spawns.length).toBe(0)
+    expect(r.submits.length).toBe(0)
     await ui.press({ key: `crew-next-${FIRST}` })
     expect(await ui.find({ text: 'queued' })).toBeUndefined()
     await ui.unmount()
@@ -130,8 +76,9 @@ for (const surface of SURFACES) {
       expect(c.prompt).toContain(OTHER_QUERY)
       expect(c.prompt).not.toContain(GUESS)
     }
-    expect(r.spawns.map(s => s.subagentType).sort()).toEqual([FIRST, SECOND].sort())
-    expect(r.spawns.every(s => s.prompt === DRAFT)).toBe(true)
+    expect(r.submits.length).toBe(1) // один общий запрос на всех
+    expect(requested(r.submits).sort()).toEqual([FIRST, SECOND].sort())
+    expect(r.submits[0]?.text).toContain(`\n${DRAFT}\n`)
     expect(await ui.find({ text: /next ·/ })).toBeUndefined()
     expect(await ui.find({ key: `crew-run-${FIRST}` })).toBeDefined()
     await ui.unmount()
@@ -144,7 +91,7 @@ for (const surface of SURFACES) {
     await ui.press({ key: `crew-next-${FIRST}` })
     await $.turn.start({ text: GUESS, turnId: 'T-guess' })
     await r.settle()
-    expect(r.spawns.map(s => s.subagentType)).toEqual([FIRST])
+    expect(requested(r.submits)).toEqual([FIRST])
     expect(await ui.find({ key: `crew-run-${FIRST}` })).toBeDefined()
     await ui.unmount()
   })
@@ -155,17 +102,17 @@ for (const surface of SURFACES) {
     await $.turn.start({ text: OTHER_QUERY, turnId: 'T-none' })
     await r.settle()
     expect(r.completes.length).toBe(0)
-    expect(r.spawns.length).toBe(0)
+    expect(r.submits.length).toBe(0)
   })
 
-  test(`${surface}: a queued agent whose spawn is refused leaves an error line in the log`, async ($, on) => {
-    const r = rig(on, { spawn: () => ({ deny: 'no capacity' }) })
+  test(`${surface}: a queued agent whose request is dropped leaves an error line in the log`, async ($, on) => {
+    const r = rig(on, { submit: () => ({ drop: 'no capacity' }) })
     await readyNext($, r, on)
     const ui = await $.ui.mount({ ...pane(86), surface })
     await ui.press({ key: `crew-next-${FIRST}` })
     await $.turn.start({ text: OTHER_QUERY, turnId: 'T-deny' })
     await r.settle()
-    expect(r.spawns.length).toBe(1)
+    expect(r.submits.length).toBe(1)
     expect(await ui.find({ text: /no capacity/ })).toBeDefined()
     await ui.unmount()
   })
@@ -183,7 +130,7 @@ test('tagging that finishes after the guess keeps CREW in next mode with its que
   expect(await ui.find({ text: 'queued' })).toBeDefined()
   await $.turn.start({ text: OTHER_QUERY, turnId: 'T-tagged' })
   await r.settle()
-  expect(r.spawns.map(s => s.subagentType)).toEqual([FIRST])
+  expect(requested(r.submits)).toEqual([FIRST])
   await ui.unmount()
 })
 
@@ -212,7 +159,7 @@ test('a new guess keeps the queue made for the previous one', async ($, on) => {
   expect(await ui.find({ text: 'queued' })).toBeDefined()
   await $.turn.start({ text: OTHER_QUERY, turnId: 'T-kept' })
   await r.settle()
-  expect(r.spawns.map(s => s.subagentType)).toEqual([FIRST])
+  expect(requested(r.submits)).toEqual([FIRST])
   await ui.unmount()
 })
 

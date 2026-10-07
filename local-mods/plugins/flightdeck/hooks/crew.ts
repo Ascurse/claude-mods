@@ -2,6 +2,7 @@
 // Nothing here touches `$`, so every rule is testable directly.
 import type { CatalogEntry, Crew, CrewMode, CrewRow, RowPhase, Tag, TagMap, TaskInfo } from '../types'
 import { fnv1a } from './cache/jev'
+import { shorten } from './core'
 
 export type { CatalogEntry, Crew, CrewMode, CrewRow, RowPhase, Tag, TagMap, TaskInfo }
 
@@ -117,24 +118,27 @@ export const setPhase = (crew: Crew, agent: string, phase: RowPhase, patch: { dr
     ? { ...crew, rows: crew.rows.map(r => (r.agent === agent ? { ...r, ...patch, phase } : r)) }
     : crew
 
-/** Запуск, который flightdeck делает прямо сейчас по нажатию человека: агент и текст задания. */
-export type OwnSpawn = { agent: string; prompt: string }
-
 /**
- * Какому ожидаемому запуску отвечает проверка разрешения; -1 — вызов чужой.
- * Совпадать должно всё: вызов сделал сам плагин, инструмент Agent, тип агента и текст задания.
+ * Запрос главной модели: запустить перечисленных агентов инструментом Agent. Задание каждого идёт дословно
+ * в ограждении, чтобы модель не пересказывала его и не делала работу сама.
  */
-export const ownSpawnIndex = (pending: readonly OwnSpawn[], check: { tool: string; input: unknown; isOwnOrigin: boolean }): number => {
-  if (!check.isOwnOrigin || check.tool !== 'Agent' || typeof check.input !== 'object' || check.input === null) return -1
-  const { prompt, subagent_type } = check.input as { prompt?: unknown; subagent_type?: unknown }
-  return pending.findIndex(p => p.prompt === prompt && p.agent === subagent_type)
+export const spawnRequest = (rows: readonly { agent: string; prompt: string }[], query: string): string => {
+  const description = `crew · ${shorten(query, 40)}`
+  const blocks = rows.map(({ agent, prompt }) => {
+    // Ограждение длиннее любой серии ``` внутри задания, иначе оно оборвётся посреди текста
+    const longestRun = Math.max(0, ...(prompt.match(/`+/g) ?? []).map(run => run.length))
+    const fence = '`'.repeat(Math.max(3, longestRun + 1))
+    return `subagent_type: ${agent}\n${fence}\n${prompt}\n${fence}`
+  })
+  return [
+    `Start ${rows.length === 1 ? 'this subagent' : 'these subagents'} now: one Agent tool call each, in a single message.`,
+    'For each call use the subagent_type given, run_in_background: true and this description:',
+    `description: ${description}`,
+    'Pass the text between the fences as the Agent prompt exactly as written, without rewording. Do not do the tasks yourself.',
+    '',
+    blocks.join('\n\n'),
+  ].join('\n')
 }
-
-type CheckVerdict = { decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string }
-
-/** Свой запуск снимает только вопрос режима (классификатора); правило из настроек и запрет остаются. */
-export const ownVerdict = <V extends CheckVerdict>(isOwn: boolean, decided: V): V | { decision: 'allow'; reason: string } =>
-  isOwn && decided.decision === 'ask' && decided.rule === undefined ? { decision: 'allow', reason: 'flightdeck: run pressed by the person' } : decided
 
 // ---------------------------------------------------------------- теги
 

@@ -68,8 +68,6 @@ import {
   draftRequest,
   filterByTags,
   mergePicks,
-  ownSpawnIndex,
-  ownVerdict,
   parseJevPicks,
   parseTagAnswer,
   parseTaskAnswer,
@@ -78,6 +76,7 @@ import {
   setPhase,
   skillDirName,
   skillFile,
+  spawnRequest,
   tagBatches,
   tagFile,
   tagHeader,
@@ -85,7 +84,7 @@ import {
   taskRequest,
   wordPicks,
 } from './crew'
-import type { CrewMode, CrewRow, OwnSpawn, RowPhase, Tag, TaskInfo } from './crew'
+import type { CrewMode, CrewRow, RowPhase, Tag, TaskInfo } from './crew'
 import { getJev, getTasks, jevKey, jevScope, putJev, putTasks, taskKey } from './cache/jev'
 
 const PANE = 'flightdeck'
@@ -258,29 +257,20 @@ async function markRow($: EngineInterface, agent: string, phase: RowPhase, patch
 
 const failure = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
-// Запуски, которые идут прямо сейчас по нажатию человека; tool.check разрешает каждый один раз.
-const ownSpawns: OwnSpawn[] = []
-
 /**
- * Спавн по нажатию человека. В auto mode серверный классификатор не видит нажатия и отказывает
- * («the request did not ask»), поэтому на время вызова плагин сам разрешает ровно этот вызов Agent.
+ * Запуск по нажатию человека — запрос главной модели, а не прямой спавн: в auto mode движок не зовёт
+ * собственные хуки плагина на $.agent.spawn, и классификатор отказывает вызову без запроса.
+ * Модель сама вызывает Agent, и классификатор видит запрос.
  */
-async function spawnOwn($: EngineInterface, agent: string, query: string, prompt: string) {
-  const own: OwnSpawn = { agent, prompt }
-  ownSpawns.push(own)
-  try {
-    return await $.agent.spawn({ subagentType: agent, prompt, description: `crew · ${shorten(query, 40)}` })
-  } finally {
-    const i = ownSpawns.indexOf(own)
-    if (i >= 0) ownSpawns.splice(i, 1)
-  }
+async function requestSpawn($: EngineInterface, rows: readonly { agent: string; prompt: string }[], query: string) {
+  const sent = await $.prompt.submit({ text: spawnRequest(rows, query) })
+  if (sent.drop !== undefined) throw new Error(sent.drop)
 }
 
-/** Запуск агента с готовым промптом; отказ движка и исключение одинаково дают строку с ошибкой. */
+/** Просьба запустить агента с готовым промптом; отказ и исключение одинаково дают строку с ошибкой. */
 async function startRow($: EngineInterface, agent: string, query: string, prompt: string) {
   try {
-    const started = await spawnOwn($, agent, query, prompt)
-    if (started.deny !== undefined) return await markRow($, agent, 'error', { error: `failed: ${started.deny}` })
+    await requestSpawn($, [{ agent, prompt }], query)
     await markRow($, agent, 'started', { draft: prompt, error: null })
   } catch (err) {
     await markRow($, agent, 'error', { error: `failed: ${failure(err)}` })
@@ -505,19 +495,26 @@ async function toggleQueued($: EngineInterface, agent: string) {
 /** Отмеченные в режиме next: задание пишется по реальному промпту; дальше их видно в карточках агентов и журнале. */
 async function startQueued($: EngineInterface, query: string, rows: readonly CrewRow[]) {
   const cwd = await $.session.cwd().catch(() => '')
-  await Promise.all(
+  const drafts = await Promise.all(
     rows.map(async row => {
       try {
         const done = await $.model.complete(draftRequest({ agent: row.agent, description: row.description, source: '' }, { query, cwd }))
         const draft = done.isAnswered ? cleanDraft(done.text) : ''
-        if (draft === '') return await say($, 'crew', `${row.agent} · error: ${done.isAnswered ? 'empty draft' : done.reason}`, 'error')
-        const started = await spawnOwn($, row.agent, query, draft)
-        if (started.deny !== undefined) await say($, 'crew', `${row.agent} · failed: ${started.deny}`, 'error')
+        if (draft !== '') return { agent: row.agent, prompt: draft }
+        await say($, 'crew', `${row.agent} · error: ${done.isAnswered ? 'empty draft' : done.reason}`, 'error')
       } catch (err) {
         await say($, 'crew', `${row.agent} · failed: ${failure(err)}`, 'error')
       }
+      return null
     }),
   )
+  const ready = drafts.filter(d => d !== null)
+  if (ready.length === 0) return
+  try {
+    await requestSpawn($, ready, query)
+  } catch (err) {
+    await Promise.all(ready.map(d => say($, 'crew', `${d.agent} · failed: ${failure(err)}`, 'error')))
+  }
 }
 
 async function startDraft($: EngineInterface, agent: string) {
@@ -724,28 +721,25 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.check', async ($, e, next) => {
-    const own = ownSpawnIndex(ownSpawns, { tool: e.tool, input: e.input, isOwnOrigin: next.origin.plugin === $.plugin.name })
-    if (own >= 0) ownSpawns.splice(own, 1)
     const decided = await next(e)
-    const verdict = ownVerdict(own >= 0, decided)
     if (e.tool_use_id) {
       const check: Check = {
         id: e.tool_use_id,
         tool: e.tool,
         bucket: bucketOf(e.tool),
-        verdict: verdict.decision === 'allow' ? 'rule' : verdict.decision,
+        verdict: decided.decision === 'allow' ? 'rule' : decided.decision,
         inSubagent: Boolean(callLoop.get(e.tool_use_id)),
         detail: shorten(describeInput(e.tool, e.input), 90),
         at: await $.clock.now(),
       }
       await update($, gate, g => recordCheck(normalizeGate(g), check))
       // The status line updates when the call settles; only a refusal ends here.
-      if (verdict.decision === 'deny') {
+      if (decided.decision === 'deny') {
         await say($, 'gate', `denied by rule · ${check.detail}`, 'error')
         await refreshStatus($, cfg)
       }
     }
-    return verdict
+    return decided
   })
 
   on('tool.call', async ($, e, next) => {

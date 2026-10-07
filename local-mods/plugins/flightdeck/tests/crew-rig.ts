@@ -56,7 +56,8 @@ export type Rig = {
   taskCompletes: { model: string; prompt: string; system?: string; maxTokens?: number }[]
   /** Запросы Haiku на разметку агентов тегами. */
   tagCompletes: { model: string; prompt: string; system?: string; maxTokens?: number }[]
-  spawns: { subagentType?: string; prompt: string; description?: string }[]
+  /** Запросы главной модели, отправленные через $.prompt.submit. */
+  submits: { text: string }[]
   /** Панели, открытые через $.ui.open, и закрытые через $.ui.close. */
   opens: { id: string; focus?: true; closeOnEscape?: true }[]
   closes: string[]
@@ -74,7 +75,8 @@ export type RigOptions = {
   task?: (req: { prompt: string }) => ModelAnswer | Promise<ModelAnswer>
   /** Ответ Haiku на разметку; по умолчанию не отвечает, и тегов нет. */
   tag?: (req: { prompt: string }) => ModelAnswer | Promise<ModelAnswer>
-  spawn?: () => { deny: string } | { agentId: string } | Promise<{ deny: string } | { agentId: string }>
+  /** Ответ на $.prompt.submit: { drop } — отказ, исключение — сбой; по умолчанию запрос принят. */
+  submit?: () => { drop: string } | void | Promise<{ drop: string } | void>
   /** Что лежит в $.store к началу теста. */
   store?: Record<string, unknown>
   /** Папка проекта сессии; по умолчанию PROJECT. */
@@ -94,7 +96,7 @@ export function rig(on: On, o: RigOptions = {}): Rig {
     completes: [],
     tagCompletes: [],
     taskCompletes: [],
-    spawns: [],
+    submits: [],
     opens: [],
     closes: [],
     store: new Map(Object.entries(o.store ?? {})),
@@ -138,11 +140,10 @@ export function rig(on: On, o: RigOptions = {}): Rig {
     const a = await answer(e as never)
     return { value: { ...a, usage: {} } as never }
   })
-  on('agent.spawn', async (_$, e) => {
-    // движок 2.1.292 отдаёт хуку вход Agent-инструмента: тип агента лежит в subagent_type
-    r.spawns.push({ subagentType: e.subagentType ?? (e as { subagent_type?: string }).subagent_type, prompt: e.prompt, description: e.description })
-    const a = await (o.spawn ?? (() => ({ agentId: `crew${r.spawns.length}` })))()
-    return 'deny' in a ? a : { model: 'claude-sonnet-5-5', agentId: a.agentId }
+  on('prompt.submit', async (_$, e) => {
+    r.submits.push({ text: e.text })
+    const a = await (o.submit ?? (() => undefined))()
+    return a ?? { text: e.text }
   })
   on('store.get', (_$, e) => ({ value: r.store.get(e.key) }))
   on('store.set', (_$, e) => {

@@ -11,6 +11,7 @@ import {
   setPhase,
   skillDirName,
   skillFile,
+  spawnRequest,
   wordPicks,
 } from '../hooks/crew'
 import type { CatalogEntry, Crew, CrewRow } from '../hooks/crew'
@@ -375,7 +376,7 @@ for (const surface of SURFACES) {
     expect(r.completes[0]?.model).toBe('haiku')
     expect(r.completes[0]?.prompt).toContain(QUERY)
     expect(r.completes[0]?.prompt).toContain(FIRST)
-    expect(r.spawns.length).toBe(0) // draft mode: nothing runs until start
+    expect(r.submits.length).toBe(0) // draft mode: nothing runs until start
     expect(await ui.find({ text: DRAFT })).toBeDefined()
     for (const k of ['start', 'edit', 'drop']) expect(await ui.find({ key: `crew-${k}-${FIRST}` })).toBeDefined()
     await ui.unmount()
@@ -389,33 +390,34 @@ for (const surface of SURFACES) {
     expect(await ui.find({ text: DRAFT })).toBeDefined()
     expect(await ui.find({ text: /```/ })).toBeUndefined()
     await ui.press({ key: `crew-start-${FIRST}` })
-    expect(r.spawns[0]?.prompt).toBe(DRAFT)
+    expect(r.submits[0]?.text).toContain(`\n${DRAFT}\n`)
+    expect(r.submits[0]?.text).not.toContain('Prompt:')
     await ui.unmount()
   })
 
-  test(`${surface}: start spawns that agent with the draft and marks the row started`, async ($, on) => {
+  test(`${surface}: start asks the main model to run that agent with the draft and marks the row started`, async ($, on) => {
     const r = rig(on)
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
     await ui.press({ key: `crew-run-${FIRST}` })
     await ui.press({ key: `crew-start-${FIRST}` })
-    expect(r.spawns.length).toBe(1)
-    expect(r.spawns[0]?.subagentType).toBe(FIRST)
-    expect(r.spawns[0]?.prompt).toBe(DRAFT)
-    expect((r.spawns[0]?.description ?? '').length > 0).toBe(true)
+    expect(r.submits.length).toBe(1)
+    expect(r.submits[0]?.text).toContain(`subagent_type: ${FIRST}`)
+    expect(r.submits[0]?.text).toContain(`\n${DRAFT}\n`)
+    expect(r.submits[0]?.text).toContain('run_in_background: true')
     expect(await ui.find({ text: /started/ })).toBeDefined()
     expect(await ui.find({ key: `crew-start-${FIRST}` })).toBeUndefined()
     await ui.unmount()
   })
 
-  test(`${surface}: edit opens a focused pane with an Input holding the draft, and spawns nothing`, async ($, on) => {
+  test(`${surface}: edit opens a focused pane with an Input holding the draft, and asks for nothing`, async ($, on) => {
     const r = rig(on)
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
     await ui.press({ key: `crew-run-${FIRST}` })
     await ui.press({ key: `crew-edit-${FIRST}` })
     expect(r.opens).toEqual([{ id: 'crew-edit', focus: true, closeOnEscape: true }])
-    expect(r.spawns.length).toBe(0)
+    expect(r.submits.length).toBe(0)
     expect(await ui.find({ text: DRAFT })).toBeDefined() // the row keeps its draft until a new text is submitted
     expect(await ui.find({ key: `crew-start-${FIRST}` })).toBeDefined()
     const edit = await $.ui.mount({ ...pane(60, 'crew-edit'), surface })
@@ -427,7 +429,7 @@ for (const surface of SURFACES) {
     await ui.unmount()
   })
 
-  test(`${surface}: submitting the edit pane saves the draft, closes the pane, and start spawns the new text`, async ($, on) => {
+  test(`${surface}: submitting the edit pane saves the draft, closes the pane, and start asks for the new text`, async ($, on) => {
     const r = rig(on)
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
@@ -439,10 +441,10 @@ for (const surface of SURFACES) {
     expect(await ui.find({ text: EDITED })).toBeDefined()
     expect(await ui.find({ text: DRAFT })).toBeUndefined()
     expect(await ui.find({ key: `crew-start-${FIRST}` })).toBeDefined() // still a draft
-    expect(r.spawns.length).toBe(0)
+    expect(r.submits.length).toBe(0)
     await ui.press({ key: `crew-start-${FIRST}` })
-    expect(r.spawns.length).toBe(1)
-    expect(r.spawns[0]?.prompt).toBe(EDITED)
+    expect(r.submits.length).toBe(1)
+    expect(r.submits[0]?.text).toContain(`\n${EDITED}\n`)
     await edit.unmount()
     await ui.unmount()
   })
@@ -476,7 +478,7 @@ for (const surface of SURFACES) {
     expect(await ui.find({ key: `crew-start-${FIRST}` })).toBeDefined()
     expect(r.store.get('crew.editHistory')).toBeUndefined()
     await ui.press({ key: `crew-start-${FIRST}` })
-    expect(r.spawns[0]?.prompt).toBe(DRAFT)
+    expect(r.submits[0]?.text).toContain(`\n${DRAFT}\n`)
     await ui.unmount()
   })
 
@@ -549,7 +551,7 @@ for (const surface of SURFACES) {
     expect(await ui.find({ text: DRAFT })).toBeUndefined()
     for (const k of ['start', 'edit', 'drop']) expect(await ui.find({ key: `crew-${k}-${FIRST}` })).toBeUndefined()
     expect(await ui.find({ key: `crew-run-${FIRST}` })).toBeDefined()
-    expect(r.spawns.length).toBe(0)
+    expect(r.submits.length).toBe(0)
     expect(r.opens.length).toBe(0)
     await ui.unmount()
   })
@@ -566,51 +568,52 @@ for (const surface of SURFACES) {
     await ui.unmount()
   })
 
-  test(`${surface}: crewRun direct spawns at once, without a draft`, { options: { crewRun: 'direct' } }, async ($, on) => {
+  test(`${surface}: crewRun direct asks the main model at once, without a draft`, { options: { crewRun: 'direct' } }, async ($, on) => {
     const r = rig(on)
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
     await ui.press({ key: `crew-run-${FIRST}` })
     expect(r.completes.length).toBe(1) // the prompt is still written by the model
-    expect(r.spawns.length).toBe(1)
-    expect(r.spawns[0]?.subagentType).toBe(FIRST)
-    expect(r.spawns[0]?.prompt).toBe(DRAFT)
+    expect(r.submits.length).toBe(1)
+    expect(r.submits[0]?.text).toContain(`subagent_type: ${FIRST}`)
+    expect(r.submits[0]?.text).toContain(`\n${DRAFT}\n`)
     expect(await ui.find({ key: `crew-start-${FIRST}` })).toBeUndefined()
     expect(await ui.find({ text: /started/ })).toBeDefined()
     expect(await ui.find({ text: DRAFT })).toBeDefined() // direct: the user still sees what the agent was asked
     await ui.unmount()
   })
 
-  test(`${surface}: a refused spawn turns the row to error, without throwing`, async ($, on) => {
-    const r = rig(on, { spawn: () => ({ deny: 'no capacity' }) })
+  test(`${surface}: a dropped request turns the row to error, without throwing`, async ($, on) => {
+    const r = rig(on, { submit: () => ({ drop: 'no capacity' }) })
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
     await ui.press({ key: `crew-run-${FIRST}` })
     await ui.press({ key: `crew-start-${FIRST}` }) // must resolve, not reject
-    expect(r.spawns.length).toBe(1)
+    expect(r.submits.length).toBe(1)
     expect(await ui.find({ text: /no capacity|error|failed/i })).toBeDefined()
     expect(await ui.find({ text: /started/ })).toBeUndefined()
     await ui.unmount()
   })
 
-  test(`${surface}: a refused spawn in direct mode is an error row too`, { options: { crewRun: 'direct' } }, async ($, on) => {
-    const r = rig(on, { spawn: () => ({ deny: 'no capacity' }) })
+  test(`${surface}: a dropped request in direct mode is an error row too`, { options: { crewRun: 'direct' } }, async ($, on) => {
+    const r = rig(on, { submit: () => ({ drop: 'no capacity' }) })
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
     await ui.press({ key: `crew-run-${FIRST}` })
-    expect(await ui.find({ text: /no capacity|error|failed/i })).toBeDefined()
+    expect(r.submits.length).toBe(1)
+    expect(await ui.find({ text: /failed: no capacity/i })).toBeDefined()
     expect(await ui.find({ text: /started/ })).toBeUndefined()
     await ui.unmount()
   })
 
-  test(`${surface}: a model that does not answer turns the row to error, with no draft and no spawn`, async ($, on) => {
+  test(`${surface}: a model that does not answer turns the row to error, with no draft and no request`, async ($, on) => {
     const r = rig(on, { model: () => ({ isAnswered: false, reason: 'empty-reply' }) })
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
     await ui.press({ key: `crew-run-${FIRST}` }) // must resolve, not reject
     expect(await ui.find({ text: /error|failed|empty/i })).toBeDefined()
     expect(await ui.find({ key: `crew-start-${FIRST}` })).toBeUndefined()
-    expect(r.spawns.length).toBe(0)
+    expect(r.submits.length).toBe(0)
     await ui.unmount()
   })
 }
@@ -638,3 +641,40 @@ for (const surface of SURFACES) {
     await ui.unmount()
   })
 }
+
+// ---------------------------------------------------------------- spawnRequest
+
+const ROWS = [
+  { agent: 'typescript-reviewer', prompt: 'Review src/a.ts for type holes.' },
+  { agent: 'security-reviewer', prompt: 'Check src/b.ts for injection.\nReport only real findings.' },
+]
+
+test('spawnRequest names the agent as subagent_type, asks for background and keeps the prompt verbatim', () => {
+  const text = spawnRequest([ROWS[0]!], 'fix the parser')
+  expect(text).toContain('subagent_type: typescript-reviewer')
+  expect(text).toContain('run_in_background: true')
+  expect(text).toContain('description: crew · fix the parser')
+  expect(text).toContain('\n```\nReview src/a.ts for type holes.\n```')
+  expect(text).toMatch(/do not do (the|these) tasks yourself/i)
+})
+
+test('spawnRequest carries every row, in order, each with its own prompt', () => {
+  const text = spawnRequest(ROWS, 'fix the parser')
+  expect(text.indexOf('subagent_type: typescript-reviewer')).toBeLessThan(text.indexOf('subagent_type: security-reviewer'))
+  expect(text).toContain('Review src/a.ts for type holes.')
+  expect(text).toContain('Check src/b.ts for injection.\nReport only real findings.')
+  expect(text.match(/subagent_type:/g)?.length).toBe(2)
+})
+
+test('spawnRequest shortens a long query in the description and flattens its newlines', () => {
+  const text = spawnRequest([ROWS[0]!], `${'word '.repeat(40)}\nsecond line`)
+  const description = /description: (crew · .*)/.exec(text)?.[1] ?? ''
+  expect(description.length).toBeLessThanOrEqual('crew · '.length + 40)
+  expect(description).toContain('…')
+})
+
+test('spawnRequest fences a prompt that holds backticks with a longer fence, so it stays one block', () => {
+  const prompt = 'Use:\n```ts\nconst a = 1\n```\nthen stop'
+  const text = spawnRequest([{ agent: 'x', prompt }], 'q')
+  expect(text).toContain(`\n\`\`\`\`\n${prompt}\n\`\`\`\``)
+})
