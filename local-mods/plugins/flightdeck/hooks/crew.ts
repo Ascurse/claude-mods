@@ -1,9 +1,9 @@
 // Pure data of the CREW panel: which agents suit the prompt, and the text sent to the model.
 // Nothing here touches `$`, so every rule is testable directly.
-import type { CatalogEntry, Crew, CrewRow, RowPhase, Tag, TagMap, TaskInfo } from '../types'
+import type { CatalogEntry, Crew, CrewMode, CrewRow, RowPhase, Tag, TagMap, TaskInfo } from '../types'
 import { fnv1a } from './cache/jev'
 
-export type { CatalogEntry, Crew, CrewRow, RowPhase, Tag, TagMap, TaskInfo }
+export type { CatalogEntry, Crew, CrewMode, CrewRow, RowPhase, Tag, TagMap, TaskInfo }
 
 export const CREW_SIZE = 5
 
@@ -116,6 +116,25 @@ export const setPhase = (crew: Crew, agent: string, phase: RowPhase, patch: { dr
   crew.rows.some(r => r.agent === agent)
     ? { ...crew, rows: crew.rows.map(r => (r.agent === agent ? { ...r, ...patch, phase } : r)) }
     : crew
+
+/** Запуск, который flightdeck делает прямо сейчас по нажатию человека: агент и текст задания. */
+export type OwnSpawn = { agent: string; prompt: string }
+
+/**
+ * Какому ожидаемому запуску отвечает проверка разрешения; -1 — вызов чужой.
+ * Совпадать должно всё: вызов сделал сам плагин, инструмент Agent, тип агента и текст задания.
+ */
+export const ownSpawnIndex = (pending: readonly OwnSpawn[], check: { tool: string; input: unknown; isOwnOrigin: boolean }): number => {
+  if (!check.isOwnOrigin || check.tool !== 'Agent' || typeof check.input !== 'object' || check.input === null) return -1
+  const { prompt, subagent_type } = check.input as { prompt?: unknown; subagent_type?: unknown }
+  return pending.findIndex(p => p.prompt === prompt && p.agent === subagent_type)
+}
+
+type CheckVerdict = { decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string }
+
+/** Свой запуск снимает только вопрос режима (классификатора); правило из настроек и запрет остаются. */
+export const ownVerdict = <V extends CheckVerdict>(isOwn: boolean, decided: V): V | { decision: 'allow'; reason: string } =>
+  isOwn && decided.decision === 'ask' && decided.rule === undefined ? { decision: 'allow', reason: 'flightdeck: run pressed by the person' } : decided
 
 // ---------------------------------------------------------------- теги
 

@@ -92,7 +92,11 @@ export type Roster = { architectTypes: string[] }
 
 export type CatalogEntry = { agent: string; description: string; source: string }
 
-export type RowPhase = 'idle' | 'writing' | 'draft' | 'started' | 'error'
+/** queued: отмечен в режиме next, стартует со следующим промптом. */
+export type RowPhase = 'idle' | 'writing' | 'draft' | 'started' | 'error' | 'queued'
+
+/** now: под идущий промпт, агент стартует сразу; next: под догадку движка о следующем промпте. */
+export type CrewMode = 'now' | 'next'
 
 export type CrewRow = {
   agent: string
@@ -135,6 +139,8 @@ export type Crew = {
   editing?: string | null
   /** Идёт фоновый запрос строк-задач: у строк без задачи рисуется `…`. */
   isTasking?: boolean
+  /** Нет поля — now. */
+  mode?: CrewMode
 }
 
 declare module 'claude-code' {

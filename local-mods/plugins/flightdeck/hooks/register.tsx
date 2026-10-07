@@ -68,6 +68,8 @@ import {
   draftRequest,
   filterByTags,
   mergePicks,
+  ownSpawnIndex,
+  ownVerdict,
   parseJevPicks,
   parseTagAnswer,
   parseTaskAnswer,
@@ -83,7 +85,7 @@ import {
   taskRequest,
   wordPicks,
 } from './crew'
-import type { CrewRow, RowPhase, Tag, TaskInfo } from './crew'
+import type { CrewMode, CrewRow, OwnSpawn, RowPhase, Tag, TaskInfo } from './crew'
 import { getJev, getTasks, jevKey, jevScope, putJev, putTasks, taskKey } from './cache/jev'
 
 const PANE = 'flightdeck'
@@ -256,10 +258,28 @@ async function markRow($: EngineInterface, agent: string, phase: RowPhase, patch
 
 const failure = (err: unknown) => (err instanceof Error ? err.message : String(err))
 
+// Запуски, которые идут прямо сейчас по нажатию человека; tool.check разрешает каждый один раз.
+const ownSpawns: OwnSpawn[] = []
+
+/**
+ * Спавн по нажатию человека. В auto mode серверный классификатор не видит нажатия и отказывает
+ * («the request did not ask»), поэтому на время вызова плагин сам разрешает ровно этот вызов Agent.
+ */
+async function spawnOwn($: EngineInterface, agent: string, query: string, prompt: string) {
+  const own: OwnSpawn = { agent, prompt }
+  ownSpawns.push(own)
+  try {
+    return await $.agent.spawn({ subagentType: agent, prompt, description: `crew · ${shorten(query, 40)}` })
+  } finally {
+    const i = ownSpawns.indexOf(own)
+    if (i >= 0) ownSpawns.splice(i, 1)
+  }
+}
+
 /** Запуск агента с готовым промптом; отказ движка и исключение одинаково дают строку с ошибкой. */
 async function startRow($: EngineInterface, agent: string, query: string, prompt: string) {
   try {
-    const started = await $.agent.spawn({ subagentType: agent, prompt, description: `crew · ${shorten(query, 40)}` })
+    const started = await spawnOwn($, agent, query, prompt)
     if (started.deny !== undefined) return await markRow($, agent, 'error', { error: `failed: ${started.deny}` })
     await markRow($, agent, 'started', { draft: prompt, error: null })
   } catch (err) {
@@ -380,7 +400,7 @@ async function tagCatalog($: EngineInterface, entries: CatalogEntry[], hash: str
   for (const old of (await $.store.keys()).filter(k => k.startsWith(TAGS_KEY_PREFIX) && k !== key)) await $.store.delete(old)
   await $.store.set(key, map)
   crewMemo.tags = { hash, map }
-  if (crewMemo.lastQuery !== '' && catalogHash([...catalog.values()]) === hash) await refreshCrew($, crewMemo.lastQuery)
+  if (crewMemo.lastQuery !== '' && catalogHash([...catalog.values()]) === hash) await refreshCrew($, crewMemo.lastQuery, (await getCrew($)).mode ?? 'now')
 }
 
 /** Строки-задачи пятёрки: из кэша, иначе один запрос Haiku; пустой ответ в кэш не попадает. */
@@ -427,10 +447,13 @@ async function loadTasks($: EngineInterface, query: string, entries: CatalogEntr
   }
 }
 
-async function refreshCrew($: EngineInterface, query: string) {
+async function refreshCrew($: EngineInterface, query: string, mode: CrewMode = 'now') {
   const entries = [...catalog.values()]
   const hash = catalogHash(entries)
-  await update($, crew, () => ({ ...DEFAULT_CREW, query, isLoading: true, total: entries.length }))
+  // перестройка под ту же догадку (например, после разметки) не теряет отмеченных
+  const prev = await getCrew($)
+  const queued = new Set(mode === 'next' && prev.query === query ? prev.rows.filter(r => r.phase === 'queued').map(r => r.agent) : [])
+  await update($, crew, () => ({ ...DEFAULT_CREW, query, isLoading: true, total: entries.length, mode }))
   try {
     const tagMap = await loadTags($, hash)
     if (!tagMap) void tagCatalog($, entries, hash).catch(() => undefined)
@@ -443,8 +466,8 @@ async function refreshCrew($: EngineInterface, query: string) {
     const allowed = new Set(pool.map(e => e.agent))
     const { picks, by } = mergePicks(jev === null ? null : jev.filter(a => allowed.has(a)), wordPicks(pool, query, CREW_SIZE), CREW_SIZE)
     if (crewMemo.lastQuery === query) {
-      const rows = rowsFor(picks, entries)
-      await update($, crew, () => ({ query, isLoading: false, by, rows, total: pool.length, tags: isFiltered ? queryTags : [], isTasking: rows.length > 0 }))
+      const rows = rowsFor(picks, entries).map(r => (queued.has(r.agent) ? { ...r, phase: 'queued' as const } : r))
+      await update($, crew, () => ({ query, isLoading: false, by, rows, total: pool.length, tags: isFiltered ? queryTags : [], isTasking: rows.length > 0, mode }))
       void loadTasks($, query, entries, rows)
     }
   } finally {
@@ -468,6 +491,33 @@ async function runRow($: EngineInterface, cfg: Config, agent: string) {
   } catch (err) {
     await markRow($, agent, 'error', { error: `error: ${failure(err)}` })
   }
+}
+
+async function toggleQueued($: EngineInterface, agent: string) {
+  await update($, crew, c => {
+    const n = normalizeCrew(c)
+    const row = n.rows.find(r => r.agent === agent)
+    if (!row || n.mode !== 'next') return n
+    return setPhase(n, agent, row.phase === 'queued' ? 'idle' : 'queued')
+  })
+}
+
+/** Отмеченные в режиме next: задание пишется по реальному промпту; дальше их видно в карточках агентов и журнале. */
+async function startQueued($: EngineInterface, query: string, rows: readonly CrewRow[]) {
+  const cwd = await $.session.cwd().catch(() => '')
+  await Promise.all(
+    rows.map(async row => {
+      try {
+        const done = await $.model.complete(draftRequest({ agent: row.agent, description: row.description, source: '' }, { query, cwd }))
+        const draft = done.isAnswered ? cleanDraft(done.text) : ''
+        if (draft === '') return await say($, 'crew', `${row.agent} · error: ${done.isAnswered ? 'empty draft' : done.reason}`, 'error')
+        const started = await spawnOwn($, row.agent, query, draft)
+        if (started.deny !== undefined) await say($, 'crew', `${row.agent} · failed: ${started.deny}`, 'error')
+      } catch (err) {
+        await say($, 'crew', `${row.agent} · failed: ${failure(err)}`, 'error')
+      }
+    }),
+  )
 }
 
 async function startDraft($: EngineInterface, agent: string) {
@@ -595,14 +645,33 @@ export const register: Register = (on, options) => {
       await say($, p.who, p.text)
     }
     const query = (e.text ?? '').trim()
-    if (!back && query !== '' && !query.startsWith('<agent-message') && query !== crewMemo.lastQuery) {
+    // CREW режима next ждёт этот промпт, даже если он слово в слово совпал с догадкой
+    const was = await getCrew($)
+    const isNext = was.mode === 'next'
+    if (!back && query !== '' && !query.startsWith('<agent-message') && (query !== crewMemo.lastQuery || isNext)) {
       crewMemo.waitingQuery = catalog.size > 0 ? '' : query
       if (catalog.size > 0) {
         crewMemo.lastQuery = query
         void refreshCrew($, query).catch(() => undefined)
       }
+      const queued = isNext ? was.rows.filter(r => r.phase === 'queued') : []
+      if (queued.length > 0) void startQueued($, query, queued).catch(() => undefined)
     }
     return next(e)
+  })
+
+  // Догадка движка о следующем промпте: CREW подбирается под неё, пока человек ещё не начал печатать.
+  on('prompt.suggest', async ($, e, next) => {
+    const shown = await next(e)
+    const text = e.text.trim()
+    if (e.origin.kind !== 'suggestion' || text === '' || catalog.size === 0) return shown
+    const c = await getCrew($)
+    if (c.mode === 'next' && c.query === text) return shown
+    // открытый черновик и уже собранная очередь важнее новой догадки
+    if (c.editing || c.rows.some(r => r.phase === 'writing' || r.phase === 'draft' || r.phase === 'queued')) return shown
+    crewMemo.lastQuery = text
+    void refreshCrew($, text, 'next').catch(() => undefined)
+    return shown
   })
 
   on('turn.step', async function* ($, e, next) {
@@ -655,7 +724,10 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.check', async ($, e, next) => {
-    const verdict = await next(e)
+    const own = ownSpawnIndex(ownSpawns, { tool: e.tool, input: e.input, isOwnOrigin: next.origin.plugin === $.plugin.name })
+    if (own >= 0) ownSpawns.splice(own, 1)
+    const decided = await next(e)
+    const verdict = ownVerdict(own >= 0, decided)
     if (e.tool_use_id) {
       const check: Check = {
         id: e.tool_use_id,
@@ -1232,7 +1304,7 @@ export const register: Register = (on, options) => {
     }
 
     // ---- log: whatever rows the other panels leave, 4 to 8
-    const used = 2 + 5 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + (isEmpty.crew ? 0 : 2 + 4 * Math.min(CREW_SIZE, cr.total)) + 3
+    const used = 2 + 5 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + (isEmpty.crew ? 0 : 2 + (cr.mode === 'next' ? 1 : 0) + 4 * Math.min(CREW_SIZE, cr.total)) + 3
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
@@ -1265,6 +1337,14 @@ export const register: Register = (on, options) => {
       const nameW = Math.min(22, Math.max(12, Math.floor((w - 4) / 3)))
       const header = cr.isLoading ? `… of ${cr.total}` : tagHeader(cr.rows.length, cr.total, cr.by, cr.tags ?? [])
       const actions = (row: CrewRow) => {
+        if (cr.mode === 'next') {
+          const isQueued = row.phase === 'queued'
+          return (
+            <Box borderStyle="round">
+              <Button key={`crew-next-${row.agent}`} variant={isQueued ? undefined : 'primary'} label={isQueued ? 'queued' : 'next'} onPress={() => toggleQueued($, row.agent)} />
+            </Box>
+          )
+        }
         if (row.phase === 'writing') return <Text color={C.amber}>writing</Text>
         if (row.phase === 'started') return <Text color={C.cleared}>started</Text>
         if (row.phase === 'draft') {
@@ -1294,6 +1374,11 @@ export const register: Register = (on, options) => {
             </Text>
             <Text dimColor>{header}</Text>
           </Box>
+          {cr.mode === 'next' ? (
+            <Text dimColor wrap="truncate">
+              {`next · ${cr.query}`}
+            </Text>
+          ) : null}
           {cr.isLoading
             ? placeholders.map(i => (
                 <Box key={`crew-wait-${i}`} flexDirection="column">
