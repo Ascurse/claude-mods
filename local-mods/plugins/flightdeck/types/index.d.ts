@@ -94,9 +94,43 @@ export type CatalogEntry = { agent: string; description: string; source: string 
 
 export type RowPhase = 'idle' | 'writing' | 'draft' | 'started' | 'error'
 
-export type CrewRow = { agent: string; description: string; phase: RowPhase; draft: string | null; error: string | null }
+export type CrewRow = {
+  agent: string
+  description: string
+  phase: RowPhase
+  draft: string | null
+  error: string | null
+  /** Одна строка Haiku: что агент сделал бы по запросу; null или нет, пока ответа нет. */
+  task?: string | null
+}
 
-export type Crew = { query: string; isLoading: boolean; by: 'jev' | 'words' | null; rows: CrewRow[]; total: number }
+/** Теги агентов из фиксированного словаря TAGS (hooks/crew.ts). */
+export type Tag = string
+
+/** Теги по агентам: ответ Haiku, оставшийся после отбрасывания неизвестных. */
+export type TagMap = Record<string, Tag[]>
+
+/** Запись кэша jev: ключ из запроса и каталога, агенты (или теги) в порядке ответа. */
+export type JevCacheEntry = { key: string; picks: string[] }
+
+/** Последние правки черновиков по агентам, новые первыми. */
+export type EditHistory = Record<string, string[]>
+
+/**
+ * total: сколько агентов прошло фильтр (весь каталог, когда фильтра нет). tags: применённые теги запроса.
+ * editing: агент, чей черновик открыт в окне правки.
+ */
+export type Crew = {
+  query: string
+  isLoading: boolean
+  by: 'jev' | 'words' | null
+  rows: CrewRow[]
+  total: number
+  tags?: Tag[]
+  editing?: string | null
+  /** Идёт фоновый запрос строк-задач: у строк без задачи рисуется `…`. */
+  isTasking?: boolean
+}
 
 declare module 'claude-code' {
   interface PluginState {

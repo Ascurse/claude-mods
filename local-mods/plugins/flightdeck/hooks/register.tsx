@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgentCard, Architect, CatalogEntry, Crew, Bucket, Check, Gate, Layout, LogLine, Loop, Main, Roster, Turn, Usage, View } from '../types'
+import type { AgentCard, Architect, CatalogEntry, Crew, Bucket, EditHistory, TagMap, Check, Gate, Layout, LogLine, Loop, Main, Roster, Turn, Usage, View } from '../types'
 import {
   DEFAULT_ARCHITECT,
   DEFAULT_GATE,
@@ -56,10 +56,39 @@ import {
   stepLoop,
 } from './core'
 import type { Config, Panel } from './core'
-import { CREW_SIZE, DEFAULT_CREW, cleanDraft, draftRequest, mergePicks, parseJevPicks, rowsFor, setPhase, skillDirName, skillFile, wordPicks } from './crew'
-import type { CrewRow, RowPhase } from './crew'
+import {
+  CREW_SIZE,
+  DEFAULT_CREW,
+  FILTERED_TOP_K,
+  TAGS,
+  TAG_TOP_K,
+  catalogHash,
+  cleanDraft,
+  draftRequest,
+  filterByTags,
+  mergePicks,
+  parseJevPicks,
+  parseTagAnswer,
+  parseTaskAnswer,
+  pushHistory,
+  rowsFor,
+  setPhase,
+  skillDirName,
+  skillFile,
+  tagBatches,
+  tagFile,
+  tagHeader,
+  tagRequest,
+  taskRequest,
+  wordPicks,
+} from './crew'
+import type { CrewRow, RowPhase, Tag } from './crew'
+import { getJev, getTasks, jevKey, jevScope, putJev, putTasks, taskKey } from './cache/jev'
 
 const PANE = 'flightdeck'
+const EDIT_PANE = 'crew-edit'
+const TAGS_KEY_PREFIX = 'crew.tags.'
+const EDIT_HISTORY_KEY = 'crew.editHistory'
 const TITLE = 'Flightdeck'
 const PANE_COLUMNS = 66
 
@@ -118,7 +147,7 @@ async function getRoster($: EngineInterface): Promise<Roster> {
 
 const normalizeCrew = (stored: unknown): Crew => {
   const c = normalize(DEFAULT_CREW, stored)
-  return { ...c, rows: listOf<CrewRow>(c.rows) }
+  return { ...c, rows: listOf<CrewRow>(c.rows), tags: listOf<Tag>(c.tags) }
 }
 async function getCrew($: EngineInterface): Promise<Crew> {
   return normalizeCrew(await read($, crew))
@@ -231,7 +260,7 @@ async function startRow($: EngineInterface, agent: string, query: string, prompt
   try {
     const started = await $.agent.spawn({ subagentType: agent, prompt, description: `crew · ${shorten(query, 40)}` })
     if (started.deny !== undefined) return await markRow($, agent, 'error', { error: `failed: ${started.deny}` })
-    await markRow($, agent, 'started', { draft: null, error: null })
+    await markRow($, agent, 'started', { draft: prompt, error: null })
   } catch (err) {
     await markRow($, agent, 'error', { error: `failed: ${failure(err)}` })
   }
@@ -241,35 +270,178 @@ async function startRow($: EngineInterface, agent: string, query: string, prompt
 
 // Каталог агентов собирается из agent.offer; в SKILL.md он пишется заново только когда изменился.
 const catalog = new Map<string, CatalogEntry>()
-const crewMemo = { writtenCatalog: '', lastQuery: '' }
+const crewMemo = {
+  writtenCatalog: '',
+  writtenTags: false,
+  lastQuery: '',
+  // Запрос, пришедший раньше списка агентов (первый ход после перезагрузки мода)
+  waitingQuery: '',
+  tags: null as { hash: string; map: TagMap } | null,
+  taggedHash: '',
+  // Один запрос строк-задач на ключ: повторный refreshCrew (после разметки) ждёт тот же ответ
+  pendingTasks: new Map<string, Promise<Record<string, string>>>(),
+}
 
 async function catalogRoot($: EngineInterface) {
   const tmp = await $.env.get('TMPDIR').catch(() => undefined)
   return `${(tmp || '/tmp').replace(/\/$/, '')}/flightdeck-crew`
 }
 
-async function askJev($: EngineInterface, query: string, entries: CatalogEntry[]) {
-  try {
-    const root = await catalogRoot($)
-    const signature = JSON.stringify(entries)
-    if (signature !== crewMemo.writtenCatalog) {
-      await Promise.all(entries.map(e => $.fs.write(`${root}/${skillDirName(e.agent)}/SKILL.md`, skillFile(e))))
-      crewMemo.writtenCatalog = signature
+async function writeCatalog($: EngineInterface, root: string, entries: CatalogEntry[]) {
+  const signature = JSON.stringify(entries)
+  if (signature === crewMemo.writtenCatalog) return
+  await Promise.all(entries.map(e => $.fs.write(`${root}/${skillDirName(e.agent)}/SKILL.md`, skillFile(e))))
+  crewMemo.writtenCatalog = signature
+}
+
+async function writeTags($: EngineInterface, root: string) {
+  if (crewMemo.writtenTags) return
+  await Promise.all(TAGS.map(t => $.fs.write(`${root}/tags/${t}/SKILL.md`, tagFile(t))))
+  crewMemo.writtenTags = true
+}
+
+/** $.store нельзя передавать значением, поэтому кэшу отдаётся обёртка с вызовами по месту. */
+const storeOf = ($: EngineInterface) => ({
+  get: (key: string) => $.store.get(key),
+  set: (key: string, value: unknown) => $.store.set(key, value),
+})
+
+/** Ответ jev из $.store, а при промахе из запуска; неудачный запуск (null) в кэш не попадает. */
+async function cachedJev($: EngineInterface, scope: string, query: string, run: () => Promise<string[] | null>) {
+  const key = jevKey(query, scope)
+  const hit = await getJev(storeOf($), key).catch(() => undefined)
+  if (hit !== undefined) return hit
+  const picks = await run()
+  if (picks !== null) await putJev(storeOf($), key, picks).catch(() => undefined)
+  return picks
+}
+
+async function askJev($: EngineInterface, query: string, entries: CatalogEntry[], topK: number) {
+  return cachedJev($, jevScope(catalogHash(entries), topK), query, async () => {
+    try {
+      const root = await catalogRoot($)
+      await writeCatalog($, root, entries)
+      const done = await $.process.run(['jev', 'pick-skill', '--turn', query, '--root', root, '--top-k', String(topK)])
+      return done.exitCode === 0 ? parseJevPicks(done.stdout, entries) : null
+    } catch {
+      return null
     }
-    const done = await $.process.run(['jev', 'pick-skill', '--turn', query, '--root', root, '--top-k', String(CREW_SIZE)])
-    return done.exitCode === 0 ? parseJevPicks(done.stdout, entries) : null
+  })
+}
+
+/** Теги запроса: jev выбирает среди псевдонавыков <root>/tags/<tag>/SKILL.md; без ответа тегов нет. */
+async function askTags($: EngineInterface, query: string, entries: CatalogEntry[]): Promise<Tag[]> {
+  const tagStubs: CatalogEntry[] = TAGS.map(t => ({ agent: t, description: '', source: '' }))
+  const picks = await cachedJev($, jevScope('tags', TAG_TOP_K), query, async () => {
+    try {
+      const root = await catalogRoot($)
+      await writeCatalog($, root, entries)
+      await writeTags($, root)
+      const done = await $.process.run(['jev', 'pick-skill', '--turn', query, '--root', `${root}/tags`, '--top-k', String(TAG_TOP_K)])
+      return done.exitCode === 0 ? parseJevPicks(done.stdout, tagStubs) : null
+    } catch {
+      return null
+    }
+  })
+  return picks ?? []
+}
+
+const isTagMap = (v: unknown): v is TagMap => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/** Теги каталога: из памяти, затем из $.store по хешу каталога; null, пока их нет. */
+async function loadTags($: EngineInterface, hash: string): Promise<TagMap | null> {
+  if (crewMemo.tags?.hash === hash) return crewMemo.tags.map
+  try {
+    const stored = await $.store.get(`${TAGS_KEY_PREFIX}${hash}`)
+    if (!isTagMap(stored)) return null
+    crewMemo.tags = { hash, map: stored }
+    return stored
   } catch {
     return null
   }
 }
 
+/** Фоновая разметка каталога Haiku пачками; раз за сессию на хеш, пустой результат не сохраняется. */
+async function tagCatalog($: EngineInterface, entries: CatalogEntry[], hash: string) {
+  if (crewMemo.taggedHash === hash) return
+  crewMemo.taggedHash = hash
+  const map: TagMap = {}
+  for (const batch of tagBatches(entries)) {
+    try {
+      const done = await $.model.complete(tagRequest(batch))
+      if (done.isAnswered) Object.assign(map, parseTagAnswer(done.text, batch))
+    } catch {
+      // пачка без ответа остаётся без тегов
+    }
+  }
+  if (Object.keys(map).length === 0) return
+  const key = `${TAGS_KEY_PREFIX}${hash}`
+  for (const old of (await $.store.keys()).filter(k => k.startsWith(TAGS_KEY_PREFIX) && k !== key)) await $.store.delete(old)
+  await $.store.set(key, map)
+  crewMemo.tags = { hash, map }
+  if (crewMemo.lastQuery !== '' && catalogHash([...catalog.values()]) === hash) await refreshCrew($, crewMemo.lastQuery)
+}
+
+/** Строки-задачи пятёрки: из кэша, иначе один запрос Haiku; пустой ответ в кэш не попадает. */
+async function fetchTasks($: EngineInterface, query: string, entries: CatalogEntry[], picked: CatalogEntry[]) {
+  const cwd = await $.session.cwd().catch(() => '')
+  const key = taskKey(query, catalogHash(entries), picked.map(e => e.agent), cwd)
+  const cached = await getTasks(storeOf($), key).catch(() => undefined)
+  if (cached) return cached
+  const inFlight = crewMemo.pendingTasks.get(key)
+  if (inFlight) return inFlight
+  const asked = (async () => {
+    const done = await $.model.complete(taskRequest(picked, { query, cwd }))
+    const tasks = done.isAnswered ? parseTaskAnswer(done.text, picked) : {}
+    if (Object.keys(tasks).length > 0) await putTasks(storeOf($), key, tasks).catch(() => undefined)
+    return tasks
+  })()
+  crewMemo.pendingTasks.set(key, asked)
+  try {
+    return await asked
+  } finally {
+    crewMemo.pendingTasks.delete(key)
+  }
+}
+
+/** Фоново дописывает задачи в строки; список к этому моменту уже показан, сбой оставляет строки без задачи. */
+async function loadTasks($: EngineInterface, query: string, entries: CatalogEntry[], rows: CrewRow[]) {
+  const picked: CatalogEntry[] = rows.map(r => ({ agent: r.agent, description: r.description, source: '' }))
+  try {
+    const tasks = picked.length > 0 ? await fetchTasks($, query, entries, picked) : {}
+    if (crewMemo.lastQuery === query) {
+      await update($, crew, c => {
+        const n = normalizeCrew(c)
+        return { ...n, rows: n.rows.map(r => (tasks[r.agent] ? { ...r, task: tasks[r.agent] } : r)) }
+      })
+    }
+  } catch {
+    // без ответа Haiku строки остаются без задачи
+  } finally {
+    if (crewMemo.lastQuery === query) await update($, crew, c => ({ ...normalizeCrew(c), isTasking: false }))
+  }
+}
+
 async function refreshCrew($: EngineInterface, query: string) {
   const entries = [...catalog.values()]
+  const hash = catalogHash(entries)
   await update($, crew, () => ({ ...DEFAULT_CREW, query, isLoading: true, total: entries.length }))
   try {
-    const jev = await askJev($, query, entries)
-    const { picks, by } = mergePicks(jev, wordPicks(entries, query, CREW_SIZE), CREW_SIZE)
-    if (crewMemo.lastQuery === query) await update($, crew, () => ({ query, isLoading: false, by, rows: rowsFor(picks, entries), total: entries.length }))
+    const tagMap = await loadTags($, hash)
+    if (!tagMap) void tagCatalog($, entries, hash).catch(() => undefined)
+    const queryTags = tagMap ? await askTags($, query, entries) : []
+    const filtered = filterByTags(entries, tagMap ?? {}, queryTags)
+    // тегов никто не несёт: фильтр бесполезен, показываем как без него
+    const isFiltered = queryTags.length > 0 && filtered.length > 0
+    const pool = isFiltered ? filtered : entries
+    const jev = await askJev($, query, entries, isFiltered ? FILTERED_TOP_K : CREW_SIZE)
+    const allowed = new Set(pool.map(e => e.agent))
+    const { picks, by } = mergePicks(jev === null ? null : jev.filter(a => allowed.has(a)), wordPicks(pool, query, CREW_SIZE), CREW_SIZE)
+    if (crewMemo.lastQuery === query) {
+      const rows = rowsFor(picks, entries)
+      await update($, crew, () => ({ query, isLoading: false, by, rows, total: pool.length, tags: isFiltered ? queryTags : [], isTasking: rows.length > 0 }))
+      void loadTasks($, query, entries, rows)
+    }
   } finally {
     if (crewMemo.lastQuery === query) await update($, crew, c => ({ ...normalizeCrew(c), isLoading: false }))
   }
@@ -282,7 +454,7 @@ async function runRow($: EngineInterface, cfg: Config, agent: string) {
   await markRow($, agent, 'writing', { draft: null, error: null })
   try {
     const cwd = await $.session.cwd().catch(() => '')
-    const done = await $.model.complete(draftRequest({ agent, description: row.description, source: '' }, { query: c.query, cwd }))
+    const done = await $.model.complete(draftRequest({ agent, description: row.description, source: '' }, { query: c.query, cwd, task: row.task }))
     if (!done.isAnswered) return await markRow($, agent, 'error', { error: `error: ${done.reason}` })
     const draft = cleanDraft(done.text)
     if (draft === '') return await markRow($, agent, 'error', { error: 'error: empty draft' })
@@ -302,9 +474,24 @@ async function startDraft($: EngineInterface, agent: string) {
 async function editDraft($: EngineInterface, agent: string) {
   const row = (await getCrew($)).rows.find(r => r.agent === agent)
   if (row?.phase !== 'draft' || !row.draft) return
-  const filled = await $.prompt.fill({ text: `Use the ${agent} agent: ${row.draft}` }).catch(() => ({ isFilled: false }))
-  if (filled.isFilled) await markRow($, agent, 'idle', { draft: null, error: null })
-  else await markRow($, agent, 'draft', { error: 'error: the prompt box is busy' })
+  await update($, crew, c => ({ ...normalizeCrew(c), editing: agent }))
+  await $.ui.open({ id: EDIT_PANE, title: `Edit · ${agent}`, focus: true, closeOnEscape: true }).catch(() => undefined)
+}
+
+async function clearEditing($: EngineInterface) {
+  await update($, crew, c => ({ ...normalizeCrew(c), editing: null }))
+}
+
+/** Enter в окне правки: новый текст становится черновиком строки и попадает в историю агента. */
+async function saveEdit($: EngineInterface, agent: string, text: string) {
+  const draft = text.trim()
+  if (draft !== '') {
+    await markRow($, agent, 'draft', { draft, error: null })
+    const history = ((await $.store.get(EDIT_HISTORY_KEY).catch(() => undefined)) ?? {}) as EditHistory
+    await $.store.set(EDIT_HISTORY_KEY, pushHistory(history, agent, draft)).catch(() => undefined)
+  }
+  await $.ui.close({ id: EDIT_PANE }).catch(() => undefined)
+  await clearEditing($)
 }
 
 // ---------------------------------------------------------------- hooks
@@ -403,9 +590,12 @@ export const register: Register = (on, options) => {
       await say($, p.who, p.text)
     }
     const query = (e.text ?? '').trim()
-    if (!back && query !== '' && !query.startsWith('<agent-message') && query !== crewMemo.lastQuery && catalog.size > 0) {
-      crewMemo.lastQuery = query
-      void refreshCrew($, query).catch(() => undefined)
+    if (!back && query !== '' && !query.startsWith('<agent-message') && query !== crewMemo.lastQuery) {
+      crewMemo.waitingQuery = catalog.size > 0 ? '' : query
+      if (catalog.size > 0) {
+        crewMemo.lastQuery = query
+        void refreshCrew($, query).catch(() => undefined)
+      }
     }
     return next(e)
   })
@@ -584,6 +774,12 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
     const id = e.agentId
+    if (!id && crewMemo.waitingQuery && catalog.size > 0) {
+      const query = crewMemo.waitingQuery
+      crewMemo.waitingQuery = ''
+      crewMemo.lastQuery = query
+      void refreshCrew($, query).catch(() => undefined)
+    }
     const now = await $.clock.now()
     if (!id) {
       const [t, cards, cost] = await Promise.all([getTurn($), getCards($), costNow($)])
@@ -620,7 +816,28 @@ export const register: Register = (on, options) => {
     return done
   })
 
+  // Escape и закрытие крестиком: правка отменена, черновик строки не тронут
+  on('ui.close', { id: EDIT_PANE }, async ($, e, next) => {
+    await clearEditing($)
+    return next(e)
+  })
+
   // ---------------------------------------------------------------- drawing
+
+  on('ui.render', { component: 'Pane', requestId: EDIT_PANE }, async ($, e) => {
+    const els = $.ui.resolve(e)
+    const { Box, Text } = els
+    const c = await getCrew($)
+    const row = c.rows.find(r => r.agent === c.editing)
+    if (!row || !('Input' in els)) return <Text dimColor>nothing to edit</Text>
+    const { Input } = els
+    return (
+      <Box flexDirection="column" width={Math.max(30, e.props.bodyColumns)}>
+        <Text bold wrap="truncate">{`${row.agent} · prompt`}</Text>
+        <Input key={`crew-edit-input-${row.agent}`} value={row.draft ?? ''} autoFocus submitLabel="save" onSubmit={(text: string) => saveEdit($, row.agent, text)} />
+      </Box>
+    )
+  })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const els = $.ui.resolve(e)
@@ -1010,7 +1227,7 @@ export const register: Register = (on, options) => {
     }
 
     // ---- log: whatever rows the other panels leave, 4 to 8
-    const used = 2 + 5 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + (isEmpty.crew ? 0 : 2 + 2 * Math.min(CREW_SIZE, cr.total)) + 3
+    const used = 2 + 5 + (showArchitect ? 6 : 0) + 6 + (v.gateOpen ? 5 : 0) + (cards.length > cfg.maxCards ? 3 + Math.min(6, cards.length) : 8) + (expandedCard ? 8 : 0) + (lp.length ? 1 : 0) + (isEmpty.crew ? 0 : 2 + 4 * Math.min(CREW_SIZE, cr.total)) + 3
     const bodyRows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 40
     const nLog = logRows(bodyRows, used)
     const shownLines = (viewed ? lines.filter(l => l.agentId === viewed) : lines).slice(-nLog)
@@ -1041,7 +1258,7 @@ export const register: Register = (on, options) => {
     // ---- crew: рядов всегда по два (имя и описание, действия), у загрузки те же ячейки без кнопок
     const crewPanel = (w: number) => {
       const nameW = Math.min(22, Math.max(12, Math.floor((w - 4) / 3)))
-      const header = cr.isLoading ? `… of ${cr.total}` : `${cr.rows.length} of ${cr.total} · ${cr.by === 'jev' ? 'jev' : 'by words'}`
+      const header = cr.isLoading ? `… of ${cr.total}` : tagHeader(cr.rows.length, cr.total, cr.by, cr.tags ?? [])
       const actions = (row: CrewRow) => {
         if (row.phase === 'writing') return <Text color={C.amber}>writing</Text>
         if (row.phase === 'started') return <Text color={C.cleared}>started</Text>
@@ -1056,7 +1273,9 @@ export const register: Register = (on, options) => {
         }
         return (
           <Box columnGap={2}>
-            <Button key={`crew-run-${row.agent}`} plain label="run" onPress={() => runRow($, cfg, row.agent)} />
+            <Box borderStyle="round">
+              <Button key={`crew-run-${row.agent}`} variant="primary" label="run" onPress={() => runRow($, cfg, row.agent)} />
+            </Box>
             {row.phase === 'error' && row.error ? <Text color={C.faint} wrap="truncate">{row.error}</Text> : null}
           </Box>
         )
@@ -1079,7 +1298,9 @@ export const register: Register = (on, options) => {
                     </Box>
                     <Text color={C.faint}> </Text>
                   </Box>
-                  <Text> </Text>
+                  <Box borderStyle="round">
+                    <Text color={C.faint}>{'   '}</Text>
+                  </Box>
                 </Box>
               ))
             : cr.rows.map(row => (
@@ -1090,11 +1311,24 @@ export const register: Register = (on, options) => {
                         {row.agent}
                       </Text>
                     </Box>
-                    <Text dimColor wrap="truncate">
+                    {row.task ? (
+                      <Text dimColor wrap="truncate">
+                        {row.task}
+                      </Text>
+                    ) : cr.isTasking ? (
+                      <Text color={C.faint}>…</Text>
+                    ) : null}
+                  </Box>
+                  <Box display="none" position="absolute" top={1} left={nameW} hover={{ display: 'flex' }}>
+                    <Text dimColor wrap="wrap">
                       {row.description}
                     </Text>
                   </Box>
-                  {row.phase === 'draft' && row.draft ? <Text>{row.draft}</Text> : null}
+                  {(row.phase === 'draft' || row.phase === 'started') && row.draft ? (
+                    <Text wrap="wrap" dimColor={row.phase === 'started'}>
+                      {row.draft}
+                    </Text>
+                  ) : null}
                   {actions(row)}
                 </Box>
               ))}

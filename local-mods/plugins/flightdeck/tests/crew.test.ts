@@ -1,6 +1,4 @@
-import type { On } from 'claude-code'
-import type { Engine } from 'claude-code/testing'
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
 
 import {
   CREW_SIZE,
@@ -17,33 +15,25 @@ import {
 } from '../hooks/crew'
 import type { CatalogEntry, Crew, CrewRow } from '../hooks/crew'
 import { parseConfig } from '../hooks/core'
-
-// ---------------------------------------------------------------- fixtures
-
-const entry = (agent: string, description: string, source = 'plugin'): CatalogEntry => ({ agent, description, source })
-
-// Descriptions never contain another agent's name, so a name on screen means that row is drawn.
-const CATALOG: CatalogEntry[] = [
-  entry('typescript-reviewer', 'Reviews typescript code for type safety and async bugs'),
-  entry('Code Reviewer', 'Reviews code changes for correctness and maintainability'),
-  entry('pkg:db-tuner', 'Tunes database queries and code that talks to postgres'),
-  entry('repo-explorer', 'Searches the repository code to answer where things live'),
-  entry('test-planner', 'Plans tests and reviews code coverage gaps'),
-  entry('security-reviewer', 'Reviews code for secrets, injection and unsafe input'),
-  entry('flutter-reviewer', 'Reviews dart and flutter code for widget mistakes'),
-  entry('docs-writer', 'Writes documentation and readme files', 'built-in'),
-]
-const NAMES = CATALOG.map(e => e.agent)
-const QUERY = 'review the code for bugs'
-const OTHER_QUERY = 'tune the postgres queries'
-const DRAFT = 'Review the parser diff and list real bugs only.'
-const JEV_FIVE = ['typescript-reviewer', 'security-reviewer', 'Code Reviewer', 'flutter-reviewer', 'test-planner']
-
-const jevStdout = (names: string[], status = 'ok') =>
-  JSON.stringify({
-    status,
-    skills: names.map((n, i) => ({ name: skillDirName(n), path: `/cache/${skillDirName(n)}/SKILL.md`, match: 0.9 - i * 0.1 })),
-  })
+import type { ModelAnswer } from './crew-rig'
+import {
+  CATALOG,
+  DRAFT,
+  JEV_FIVE,
+  NAMES,
+  OTHER_QUERY,
+  QUERY,
+  SURFACES,
+  deferred,
+  drawnRows,
+  entry,
+  jevStdout,
+  offerAll,
+  pane,
+  ready,
+  rig,
+} from './crew-rig'
+import type { JevAnswer } from './crew-rig'
 
 // ---------------------------------------------------------------- pure behaviour
 
@@ -186,127 +176,6 @@ test('crew is one of the default panels, last, and a config can drop it', () => 
   expect(parseConfig({ panels: 'main,crew,log' }).panels).toEqual(['main', 'crew', 'log'])
 })
 
-// ---------------------------------------------------------------- engine rig
-
-type JevAnswer = { exitCode: number; stdout: string } | 'reject'
-type ModelAnswer = { isAnswered: true; text: string } | { isAnswered: false; reason: 'empty-reply' }
-
-const deferred = <T = void>() => {
-  let resolve!: (v: T) => void
-  const promise = new Promise<T>(r => {
-    resolve = r
-  })
-  return { promise, resolve }
-}
-
-type Rig = {
-  writes: { path: string; text: string }[]
-  runs: string[][]
-  jevRuns: () => string[][]
-  completes: { model: string; prompt: string; system?: string; maxTokens?: number }[]
-  spawns: { subagentType?: string; prompt: string; description?: string }[]
-  fills: { text: string }[]
-  /** Event order: 'write' | 'jev' */
-  order: string[]
-  settle: () => Promise<void>
-}
-
-type RigOptions = {
-  jev?: (argv: string[]) => JevAnswer | Promise<JevAnswer>
-  model?: (req: { prompt: string }) => ModelAnswer | Promise<ModelAnswer>
-  spawn?: () => { deny: string } | { agentId: string }
-}
-
-const OFFER_PROVIDER = { plugin: 'engine', tier: 'core' as const }
-
-function rig(on: On, o: RigOptions = {}): Rig {
-  const clock = mock.clock(on)
-  const r: Rig = {
-    writes: [],
-    runs: [],
-    jevRuns: () => r.runs.filter(a => a[0] === 'jev'),
-    completes: [],
-    spawns: [],
-    fills: [],
-    order: [],
-    settle: async () => {
-      await clock.advance(1)
-    },
-  }
-  on('ui.status', () => ({ value: undefined }))
-  on('turn.start', (_$, e) => ({ turnId: e.turnId }))
-  on('turn.complete', () => ({ text: '' }))
-  on('agent.offer', () => ({ isOffered: true }))
-  on('fs.write', (_$, e) => {
-    r.writes.push({ path: e.path, text: e.text })
-    r.order.push('write')
-    return { value: undefined }
-  })
-  on('process.run', async (_$, e) => {
-    const argv = [...e.argv]
-    r.runs.push(argv)
-    let answer: JevAnswer = { exitCode: 0, stdout: '' }
-    if (argv[0] === 'jev') {
-      r.order.push('jev')
-      answer = await (o.jev ?? (() => ({ exitCode: 0, stdout: jevStdout(JEV_FIVE) })))(argv)
-    }
-    if (answer === 'reject') return { deny: 'jev is not installed' }
-    return { value: { exitCode: answer.exitCode, stdout: answer.stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  on('model.complete', async (_$, e) => {
-    r.completes.push(e as never)
-    const a = await (o.model ?? (() => ({ isAnswered: true as const, text: DRAFT })))(e as never)
-    return { value: { ...a, usage: {} } as never }
-  })
-  on('agent.spawn', (_$, e) => {
-    // движок 2.1.292 отдаёт хуку вход Agent-инструмента: тип агента лежит в subagent_type
-    r.spawns.push({ subagentType: e.subagentType ?? (e as { subagent_type?: string }).subagent_type, prompt: e.prompt, description: e.description })
-    const a = (o.spawn ?? (() => ({ agentId: `crew${r.spawns.length}` })))()
-    return 'deny' in a ? a : { model: 'claude-sonnet-5-5', agentId: a.agentId }
-  })
-  on('prompt.fill', (_$, e) => {
-    r.fills.push({ text: e.text })
-    return { isFilled: true }
-  })
-  return r
-}
-
-async function offerAll($: Engine, catalog: CatalogEntry[] = CATALOG) {
-  for (const e of catalog) await $.agent.offer({ ...e, provider: OFFER_PROVIDER })
-}
-
-const pane = (bodyColumns: number) => ({
-  plugin: 'flightdeck',
-  component: 'Pane' as const,
-  requestId: 'flightdeck',
-  props: {
-    title: 'Flightdeck',
-    isFocused: true,
-    bodyColumns,
-    placement: 'dock' as const,
-    scroll: { offset: 0, bodyRows: 70 },
-    view: {},
-  },
-})
-
-const SURFACES = ['terminal', 'desktop'] as const
-
-/** Offer the catalog, send one prompt, let background work settle. */
-async function ready($: Engine, r: Rig, query = QUERY) {
-  await offerAll($)
-  await $.turn.start({ text: query, turnId: `T-${query.length}` })
-  await r.settle()
-}
-
-type Mounted = Awaited<ReturnType<Engine['ui']['mount']>>
-
-/** How many catalog agents are drawn as a row. */
-async function drawnRows(ui: Pick<Mounted, 'find'>): Promise<string[]> {
-  const drawn: string[] = []
-  for (const name of NAMES) if (await ui.find({ text: name })) drawn.push(name)
-  return drawn
-}
-
 // ---------------------------------------------------------------- engine: what the panel shows
 
 for (const surface of SURFACES) {
@@ -323,6 +192,19 @@ for (const surface of SURFACES) {
     expect(await ui.find({ text: /CREW/ })).toBeUndefined()
     await ui.unmount()
     expect(r.jevRuns().length).toBe(0) // nothing to rank, so jev is not asked
+  })
+
+  test(`${surface}: a prompt that comes before the agent listing still gets its crew once the turn ends`, async ($, on) => {
+    const r = rig(on)
+    // после перезагрузки мода список агентов приходит уже после turn.start
+    await $.turn.start({ text: QUERY, turnId: 'T-late' })
+    await offerAll($)
+    await $.turn.complete({ answer: '', durationMs: 10, isAborted: false, turnId: 'T-late', reason: 'answer' })
+    await r.settle()
+    const ui = await $.ui.mount({ ...pane(86), surface })
+    expect((await drawnRows(ui)).sort()).toEqual([...JEV_FIVE].sort())
+    await ui.unmount()
+    expect(r.jevRuns().length > 0).toBe(true)
   })
 
   test(`${surface}: a catalog but no prompt yet draws no CREW panel, and an empty prompt asks nothing`, async ($, on) => {
@@ -353,6 +235,9 @@ for (const surface of SURFACES) {
     expect(await ui.find({ text: /CREW/ })).toBeDefined()
     expect(await ui.find({ text: /… of 8/ })).toBeDefined()
     expect(await ui.find({ key: 'crew-run-typescript-reviewer' })).toBeUndefined() // loading rows carry no buttons
+    // заглушка той же высоты, что и ряд с рамкой вокруг run: список не прыгает
+    const wait = await ui.find({ key: 'crew-wait-0' })
+    expect(JSON.stringify(wait?.children)).toContain('"borderStyle":"round"')
     gate.resolve({ exitCode: 0, stdout: jevStdout(JEV_FIVE) })
     await started
     await r.settle()
@@ -464,6 +349,7 @@ for (const surface of SURFACES) {
 // ---------------------------------------------------------------- engine: run, start, edit, drop
 
 const FIRST = 'typescript-reviewer'
+const EDITED = 'Only check the lexer; skip the parser.'
 
 for (const surface of SURFACES) {
   test(`${surface}: run puts the row in writing while the model drafts, then shows the draft with start, edit, drop`, async ($, on) => {
@@ -522,18 +408,135 @@ for (const surface of SURFACES) {
     await ui.unmount()
   })
 
-  test(`${surface}: edit puts agent and draft in the prompt box and clears the draft`, async ($, on) => {
+  test(`${surface}: edit opens a focused pane with an Input holding the draft, and spawns nothing`, async ($, on) => {
     const r = rig(on)
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
     await ui.press({ key: `crew-run-${FIRST}` })
     await ui.press({ key: `crew-edit-${FIRST}` })
-    expect(r.fills.length).toBe(1)
-    expect(r.fills[0]?.text).toContain(FIRST)
-    expect(r.fills[0]?.text).toContain(DRAFT)
+    expect(r.opens).toEqual([{ id: 'crew-edit', focus: true, closeOnEscape: true }])
     expect(r.spawns.length).toBe(0)
-    expect(await ui.find({ key: `crew-start-${FIRST}` })).toBeUndefined()
+    expect(await ui.find({ text: DRAFT })).toBeDefined() // the row keeps its draft until a new text is submitted
+    expect(await ui.find({ key: `crew-start-${FIRST}` })).toBeDefined()
+    const edit = await $.ui.mount({ ...pane(60, 'crew-edit'), surface })
+    const input = await edit.find({ key: `crew-edit-input-${FIRST}` })
+    expect(input?.type).toBe('Input')
+    expect(input?.props.value).toBe(DRAFT)
+    expect(await edit.find({ type: 'Input' })).toBeDefined()
+    await edit.unmount()
+    await ui.unmount()
+  })
+
+  test(`${surface}: submitting the edit pane saves the draft, closes the pane, and start spawns the new text`, async ($, on) => {
+    const r = rig(on)
+    await ready($, r)
+    const ui = await $.ui.mount({ ...pane(86), surface })
+    await ui.press({ key: `crew-run-${FIRST}` })
+    await ui.press({ key: `crew-edit-${FIRST}` })
+    const edit = await $.ui.mount({ ...pane(60, 'crew-edit'), surface })
+    await $.ui.input({ plugin: 'flightdeck', key: `crew-edit-input-${FIRST}`, text: EDITED, surface, requestId: 'crew-edit' })
+    expect(r.closes).toEqual(['crew-edit'])
+    expect(await ui.find({ text: EDITED })).toBeDefined()
     expect(await ui.find({ text: DRAFT })).toBeUndefined()
+    expect(await ui.find({ key: `crew-start-${FIRST}` })).toBeDefined() // still a draft
+    expect(r.spawns.length).toBe(0)
+    await ui.press({ key: `crew-start-${FIRST}` })
+    expect(r.spawns.length).toBe(1)
+    expect(r.spawns[0]?.prompt).toBe(EDITED)
+    await edit.unmount()
+    await ui.unmount()
+  })
+
+  test(`${surface}: every saved edit goes to the agent's history in $.store, newest first, ten at most`, async ($, on) => {
+    const r = rig(on)
+    await ready($, r)
+    const ui = await $.ui.mount({ ...pane(86), surface })
+    await ui.press({ key: `crew-run-${FIRST}` })
+    const texts = Array.from({ length: 12 }, (_, i) => `edit number ${i}`)
+    for (const text of texts) {
+      await ui.press({ key: `crew-edit-${FIRST}` })
+      const edit = await $.ui.mount({ ...pane(60, 'crew-edit'), surface })
+      await $.ui.input({ plugin: 'flightdeck', key: `crew-edit-input-${FIRST}`, text, surface, requestId: 'crew-edit' })
+      await edit.unmount()
+    }
+    const history = r.store.get('crew.editHistory') as Record<string, string[]>
+    expect(history[FIRST]).toEqual(texts.slice(2).reverse())
+    expect(Object.keys(history)).toEqual([FIRST])
+    await ui.unmount()
+  })
+
+  test(`${surface}: leaving the edit pane without submitting (Escape) leaves the draft as it was`, async ($, on) => {
+    const r = rig(on)
+    await ready($, r)
+    const ui = await $.ui.mount({ ...pane(86), surface })
+    await ui.press({ key: `crew-run-${FIRST}` })
+    await ui.press({ key: `crew-edit-${FIRST}` })
+    // Escape закрывает панель, ничего не отправляя: тест движка не умеет поднимать ui.close, так что просто не отправляем
+    expect(await ui.find({ text: DRAFT })).toBeDefined()
+    expect(await ui.find({ key: `crew-start-${FIRST}` })).toBeDefined()
+    expect(r.store.get('crew.editHistory')).toBeUndefined()
+    await ui.press({ key: `crew-start-${FIRST}` })
+    expect(r.spawns[0]?.prompt).toBe(DRAFT)
+    await ui.unmount()
+  })
+
+  test(`${surface}: an empty submit in the edit pane keeps the old draft`, async ($, on) => {
+    const r = rig(on)
+    await ready($, r)
+    const ui = await $.ui.mount({ ...pane(86), surface })
+    await ui.press({ key: `crew-run-${FIRST}` })
+    await ui.press({ key: `crew-edit-${FIRST}` })
+    const edit = await $.ui.mount({ ...pane(60, 'crew-edit'), surface })
+    await $.ui.input({ plugin: 'flightdeck', key: `crew-edit-input-${FIRST}`, text: '   ', surface, requestId: 'crew-edit' })
+    expect(await ui.find({ text: DRAFT })).toBeDefined()
+    expect(r.store.get('crew.editHistory')).toBeUndefined()
+    await edit.unmount()
+    await ui.unmount()
+  })
+
+  test(`${surface}: the prompt stays on the row after start, dim, with "started" as the status`, async ($, on) => {
+    const r = rig(on)
+    await ready($, r)
+    const ui = await $.ui.mount({ ...pane(86), surface })
+    await ui.press({ key: `crew-run-${FIRST}` })
+    await ui.press({ key: `crew-start-${FIRST}` })
+    expect(await ui.find({ text: /started/ })).toBeDefined()
+    const shown = (await ui.findAll({ type: 'Text' })).find(t => t.children?.[0] === DRAFT)
+    expect(shown).toBeDefined()
+    expect(shown?.props.dimColor).toBe(true)
+    await ui.unmount()
+  })
+
+  test(`${surface}: a long prompt is drawn whole and wrapped, never truncated`, async ($, on) => {
+    const long = `${'Check every branch of the parser and report each real defect with its file and line. '.repeat(6)}END`
+    const r = rig(on, { model: () => ({ isAnswered: true, text: long }) })
+    await ready($, r)
+    const ui = await $.ui.mount({ ...pane(60), surface })
+    await ui.press({ key: `crew-run-${FIRST}` })
+    const drafted = await ui.find({ text: long })
+    expect(drafted?.props.wrap).not.toBe('truncate')
+    await ui.press({ key: `crew-start-${FIRST}` })
+    const started = await ui.find({ text: long })
+    expect(started).toBeDefined()
+    expect(started?.props.wrap).not.toBe('truncate')
+    await ui.unmount()
+  })
+
+  test(`${surface}: run is a primary Button, not plain, inside a round-bordered Box`, async ($, on) => {
+    const r = rig(on)
+    await ready($, r)
+    const ui = await $.ui.mount({ ...pane(86), surface })
+    const run = await ui.find({ key: `crew-run-${FIRST}` })
+    expect(run?.type).toBe('Button')
+    expect(run?.props.variant).toBe('primary')
+    expect(run?.props.plain).toBeUndefined()
+    // ближайшая рамка вокруг кнопки: круглая, без своего цвета (цвет темы)
+    const frames = (await ui.findAll({ type: 'Box' })).filter(
+      b => b.props.borderStyle === 'round' && b.props.borderColor === undefined && JSON.stringify(b.children).includes(`crew-run-${FIRST}`),
+    )
+    expect(frames.length > 0).toBe(true)
+    await ui.press({ key: `crew-run-${FIRST}` })
+    for (const k of ['start', 'edit', 'drop']) expect((await ui.find({ key: `crew-${k}-${FIRST}` }))?.props.plain).toBe(true)
     await ui.unmount()
   })
 
@@ -547,7 +550,7 @@ for (const surface of SURFACES) {
     for (const k of ['start', 'edit', 'drop']) expect(await ui.find({ key: `crew-${k}-${FIRST}` })).toBeUndefined()
     expect(await ui.find({ key: `crew-run-${FIRST}` })).toBeDefined()
     expect(r.spawns.length).toBe(0)
-    expect(r.fills.length).toBe(0)
+    expect(r.opens.length).toBe(0)
     await ui.unmount()
   })
 
@@ -574,6 +577,7 @@ for (const surface of SURFACES) {
     expect(r.spawns[0]?.prompt).toBe(DRAFT)
     expect(await ui.find({ key: `crew-start-${FIRST}` })).toBeUndefined()
     expect(await ui.find({ text: /started/ })).toBeDefined()
+    expect(await ui.find({ text: DRAFT })).toBeDefined() // direct: the user still sees what the agent was asked
     await ui.unmount()
   })
 

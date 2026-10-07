@@ -1,9 +1,22 @@
 # Changelog
 
+## 0.4.2
+
+- The one-line task cache is keyed by the project folder too, so the same prompt in another project asks Haiku again instead of showing the old project's tasks.
+
+## 0.4.1
+
+- The crew panel now fills on the first prompt after a reload: when the agent listing arrives after the prompt, the pick runs once the turn ends.
+
 ## 0.4.0
 
 - New **crew** panel: on each prompt, Jev picks the 5 agents that fit it from every agent the session offers; word match takes over when Jev is missing or fails, and the header says which.
 - `run` has Haiku write the agent's prompt from your request; `start`, `edit` and `drop` act on the draft. `crewRun: direct` spawns without the draft.
+- Topic tags: Haiku tags the catalog once per catalog (kept in `$.store`), Jev picks the tags of your prompt, and the panel shows only agents carrying one (`5 of 38 · jev · frontend, testing`). Without tags it behaves as before.
+- Jev answers are cached in `$.store` (50 entries), so a repeated prompt, even in a new session, does not call Jev.
+- Beside each agent name: Haiku's one-line task for your request (one call for all 5, cached, written in the background); the description shows on hover.
+- `run` is a framed primary button. The prompt stays on the row in full after `start`, dim.
+- `edit` opens a focused pane with the draft: Enter saves it (and keeps the last 10 edits per agent), Escape leaves it as it was. It replaces the old fill of the prompt box.
 - `crew` joins the default `panels`. README: what the crew panel runs and sends.
 
 ## 0.3.2
