@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.3
+
+- Crew rows no longer reveal the agent's description on hover: on desktop the pointer rests over the pane, so the card covered the task line. A row whose task never came says `нет задачи` instead of staying blank.
+
 ## 0.4.2
 
 - The one-line task cache is keyed by the project folder too, so the same prompt in another project asks Haiku again instead of showing the old project's tasks.

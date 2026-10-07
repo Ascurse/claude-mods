@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { TASK_MAX, catalogHash, draftRequest, parseTaskAnswer, taskRequest } from '../hooks/crew'
+import { NO_TASK, TASK_MAX, catalogHash, draftRequest, parseTaskAnswer, taskRequest } from '../hooks/crew'
 import { TASKS_KEY, TASK_LIMIT, getTasks, putTasks, taskKey } from '../hooks/cache/jev'
 import { CATALOG, DRAFT, JEV_FIVE, OTHER_QUERY, PROJECT, QUERY, SURFACES, deferred, entry, pane, ready, rig } from './crew-rig'
 import type { ModelAnswer } from './crew-rig'
@@ -129,21 +129,18 @@ for (const surface of SURFACES) {
     await ui.unmount()
   })
 
-  test(`${surface}: the description sits in a Box that is display none and shown on hover`, async ($, on) => {
+  test(`${surface}: the row draws no agent description, not even one revealed on hover`, async ($, on) => {
     const r = rig(on, { task: answerTasks })
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
     const description = CATALOG.find(e => e.agent === FIRST)?.description as string
     const row = (await ui.findAll({ type: 'Box' })).find(b => b.props.key === `crew-${FIRST}`)
-    type Node = { type?: string; props?: Record<string, unknown>; hover?: unknown; children?: unknown[] }
-    const hidden = (row?.children as Node[] | undefined)?.find(c => c.props?.display === 'none' && JSON.stringify(c.children).includes(description))
-    expect(hidden?.type).toBe('Box')
-    expect(hidden?.hover).toEqual({ display: 'flex' })
-    expect(hidden?.props?.position).toBe('absolute')
+    expect(JSON.stringify(row)).toContain(TASKS[FIRST] as string)
+    expect(JSON.stringify(row)).not.toContain(description)
     await ui.unmount()
   })
 
-  test(`${surface}: with no task at all nothing is drawn beside the name, and the row buttons stay`, async ($, on) => {
+  test(`${surface}: with no task at all the name is followed by an explicit no-task mark, and the row buttons stay`, async ($, on) => {
     const r = rig(on) // Haiku never answers the tasks call
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
@@ -151,7 +148,8 @@ for (const surface of SURFACES) {
     expect(await ui.find({ text: '…' })).toBeUndefined()
     const row = (await ui.findAll({ type: 'Box' })).find(b => b.props.key === `crew-${FIRST}`)
     const nameLine = JSON.stringify((row?.children as unknown[] | undefined)?.[0])
-    expect(nameLine).not.toContain('Reviews typescript code')
+    expect(nameLine).toContain(NO_TASK)
+    expect(JSON.stringify(row)).not.toContain('Reviews typescript code')
     await ui.unmount()
   })
 
@@ -161,6 +159,8 @@ for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...pane(86), surface })
     for (const a of JEV_FIVE) expect(await ui.find({ key: `crew-run-${a}` })).toBeDefined()
     expect(await ui.find({ text: '…' })).toBeUndefined()
+    expect((await ui.findAll({ type: 'Text', text: NO_TASK })).length).toBe(JEV_FIVE.length)
+    expect(JSON.stringify(await ui.findAll({ type: 'Box' }))).not.toContain('Reviews typescript code')
     await ui.unmount()
   })
 
@@ -170,6 +170,7 @@ for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...pane(86), surface })
     expect(await ui.find({ key: `crew-run-${FIRST}` })).toBeDefined()
     expect(await ui.find({ text: TASKS[FIRST] as string })).toBeUndefined()
+    expect(await ui.find({ text: NO_TASK })).toBeDefined()
     await ui.unmount()
   })
 }
