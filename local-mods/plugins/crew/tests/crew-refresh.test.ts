@@ -242,18 +242,52 @@ async function readyNext($: Engine, r: Rig, on: Parameters<typeof rig>[0]) {
 }
 
 for (const surface of SURFACES) {
-  test(`${surface}: ↻ in next mode re-picks for the guess and keeps the queue`, async ($, on) => {
+  test(`${surface}: ↻ in next mode turns CREW to the current conversation and keeps the queue`, async ($, on) => {
     const r = rig(on, { messages: TRANSCRIPT, jev: jevInTurn(JEV_FIVE, JEV_FIVE, OTHER_FIVE) })
     await readyNext($, r, on)
     const ui = await $.ui.mount({ ...pane(86), surface })
     await ui.press({ key: `crew-next-${FIRST}` })
     await ui.press({ key: 'crew-refresh' })
     await r.settle()
-    expect(crewTurns(r).at(-1)).toBe(GUESS)
-    expect(await ui.find({ text: new RegExp(`next · ${GUESS}`) })).toBeDefined()
+    const turn = crewTurns(r).at(-1) ?? ''
+    expect(turn.startsWith(QUERY)).toBe(true)
+    expect(turn).toContain(REPLY)
+    expect(await ui.find({ text: /next ·/ })).toBeUndefined()
     expect(await ui.find({ text: 'queued' })).toBeDefined()
-    expect(await drawnRows(ui)).toContain(FIRST)
-    expect((await drawnRows(ui)).length).toBe(5)
+    expect([...(await drawnRows(ui))].sort()).toEqual([FIRST, ...OTHER_FIVE.slice(0, 4)].sort())
+    await $.turn.start({ text: 'and the lexer too', turnId: 'T-after-refresh' })
+    await r.settle()
+    expect(r.submits.some(s => s.text.includes(`subagent_type: ${FIRST}`))).toBe(true)
     await ui.unmount()
   })
+
+  test(`${surface}: after ↻ from next mode, pressing queued takes the agent off the queue`, async ($, on) => {
+    const r = rig(on, { messages: TRANSCRIPT, jev: jevInTurn(JEV_FIVE, JEV_FIVE, OTHER_FIVE) })
+    await readyNext($, r, on)
+    const ui = await $.ui.mount({ ...pane(86), surface })
+    await ui.press({ key: `crew-next-${FIRST}` })
+    await ui.press({ key: 'crew-refresh' })
+    await r.settle()
+    await ui.press({ key: `crew-next-${FIRST}` })
+    await r.settle()
+    expect(await ui.find({ text: 'queued' })).toBeUndefined()
+    await $.turn.start({ text: 'and the lexer too', turnId: 'T-unqueued' })
+    await r.settle()
+    expect(r.submits.length).toBe(0)
+    await ui.unmount()
+  })
+
+  test(`${surface}: ↻ from next mode with no transcript still starts the queue on the guess sent word for word`, async ($, on) => {
+    const r = rig(on, { messages: [], jev: jevInTurn(JEV_FIVE, JEV_FIVE, OTHER_FIVE) })
+    await readyNext($, r, on)
+    const ui = await $.ui.mount({ ...pane(86), surface })
+    await ui.press({ key: `crew-next-${FIRST}` })
+    await ui.press({ key: 'crew-refresh' })
+    await r.settle()
+    await $.turn.start({ text: GUESS, turnId: 'T-guess-sent' })
+    await r.settle()
+    expect(r.submits.some(s => s.text.includes(`subagent_type: ${FIRST}`))).toBe(true)
+    await ui.unmount()
+  })
+
 }

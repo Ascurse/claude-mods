@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- From the next mode, `↻` and `/crew refresh` turn the crew back to the current conversation instead of picking again for the same guess. The queue stays, and the queued agents still start with your next prompt.
+
 ## 0.2.0
 
 - `↻` at the right of the CREW header and `/crew refresh` pick the crew again for the current conversation: your last prompt plus the end of Claude's last reply. They skip the jev and task caches and write the fresh answers back.
