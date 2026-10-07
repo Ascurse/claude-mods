@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.4
+
+- Before `run`, each crew row shows a short draft under the agent name: one dim line, cut to the pane width, on how the agent would start. It comes from the same single Haiku call as the one-line tasks, so the number of calls does not change; the draft written by `run` replaces it. The task cache moves to a new key, so tasks cached by 0.4.3 are asked again once.
+
 ## 0.4.3
 
 - Crew rows no longer reveal the agent's description on hover: on desktop the pointer rests over the pane, so the card covered the task line. A row whose task never came says `нет задачи` instead of staying blank.

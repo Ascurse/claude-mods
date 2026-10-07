@@ -1,5 +1,5 @@
 // Кэш ответов jev в $.store: повторный запрос, даже из новой сессии, не запускает jev.
-import type { JevCacheEntry } from '../../types'
+import type { JevCacheEntry, TaskInfo } from '../../types'
 
 export const JEV_CACHE_KEY = 'crew.jevCache'
 export const JEV_LIMIT = 50
@@ -35,13 +35,17 @@ export const putJev = async (store: CacheStore, key: string, picks: readonly str
   await store.set(JEV_CACHE_KEY, [...kept, { key, picks: [...picks] }].slice(-JEV_LIMIT))
 }
 
-export const TASKS_KEY = 'crew.taskCache'
+// v2: задача хранится вместе с plan; записи старого вида (строка) под прежним ключом больше не читаются
+export const TASKS_KEY = 'crew.taskCache.v2'
 export const TASK_LIMIT = 50
 
-type TaskEntry = { key: string; tasks: Record<string, string> }
+type TaskEntry = { key: string; tasks: Record<string, TaskInfo> }
 
-const isTasks = (v: unknown): v is Record<string, string> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v) && Object.values(v).every(t => typeof t === 'string')
+const isTaskInfo = (t: unknown): t is TaskInfo =>
+  typeof t === 'object' && t !== null && typeof (t as TaskInfo).task === 'string' && ((t as TaskInfo).plan === null || typeof (t as TaskInfo).plan === 'string')
+
+const isTasks = (v: unknown): v is Record<string, TaskInfo> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v) && Object.values(v).every(isTaskInfo)
 
 const taskEntriesOf = (stored: unknown): TaskEntry[] =>
   Array.isArray(stored) ? stored.filter((e): e is TaskEntry => typeof e?.key === 'string' && isTasks(e.tasks)) : []
@@ -50,10 +54,10 @@ const taskEntriesOf = (stored: unknown): TaskEntry[] =>
 export const taskKey = (query: string, catalogHash: string, agents: readonly string[], cwd: string): string =>
   jevKey(query, `tasks:${catalogHash}:${agents.join('|')}:${cwd}`)
 
-export const getTasks = async (store: CacheStore, key: string): Promise<Record<string, string> | undefined> =>
+export const getTasks = async (store: CacheStore, key: string): Promise<Record<string, TaskInfo> | undefined> =>
   taskEntriesOf(await store.get(TASKS_KEY)).find(e => e.key === key)?.tasks
 
-export const putTasks = async (store: CacheStore, key: string, tasks: Record<string, string>): Promise<void> => {
+export const putTasks = async (store: CacheStore, key: string, tasks: Record<string, TaskInfo>): Promise<void> => {
   const kept = taskEntriesOf(await store.get(TASKS_KEY)).filter(e => e.key !== key)
   await store.set(TASKS_KEY, [...kept, { key, tasks }].slice(-TASK_LIMIT))
 }
