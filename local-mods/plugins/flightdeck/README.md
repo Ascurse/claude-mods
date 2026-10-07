@@ -81,6 +81,7 @@ Starts with tsc on the parser package, then reads the diff
 
 Pressing `run` makes one Haiku call. The request carries the short draft, so the full prompt starts from the same steps. The model is asked for:
 
+<!-- draft-request:start (bun scripts/readme-draft.ts --write) -->
 ```text
 User request:
 fix the flaky parser test
@@ -96,6 +97,7 @@ Its first steps, already shown to the user; begin the prompt with them, phrased 
 
 Write the prompt to give this subagent.
 ```
+<!-- draft-request:end -->
 
 The dim line is then replaced by the draft Haiku writes. Its exact words vary from call to call, but the draft opens with those steps as instructions to the agent, for example:
 
@@ -229,7 +231,10 @@ claude --plugin-dir .            # load it; edits hot-reload
 claude plugin validate .
 claude plugin test .
 npx -p typescript tsc -p .       # after the first load, which writes .claude-plugin/types/
+bun scripts/readme-draft.ts      # README's draftRequest example matches hooks/crew.ts; --write refreshes it
 ```
+
+The last check reads files, so it can't live in `claude plugin test` (its sandbox has no file access). In this repo the pre-commit hook (`.beads/hooks/pre-commit`) runs it whenever `hooks/crew.ts` or `README.md` is staged.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
