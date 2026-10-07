@@ -70,6 +70,44 @@ https://github.com/user-attachments/assets/9ad0fcc3-c81c-427a-a743-f7b6c49f5885
 
 Connectors animate only while work flows: a turn is running, an agent is running, or a consult is open. Panels with nothing to show take no room, so a session without subagents shows just the main box and the log.
 
+### Crew: from the short draft to the full prompt
+
+Say the request is `fix the flaky parser test` in `/work/parser`. Before `run`, a crew row looks roughly like this: the one-line task beside the name, the short draft dim under it.
+
+```text
+typescript-reviewer  Check the types in the parser diff          [ run ]
+Starts with tsc on the parser package, then reads the diff
+```
+
+Pressing `run` makes one Haiku call. The request carries the short draft, so the full prompt starts from the same steps. The model is asked for:
+
+```text
+User request:
+fix the flaky parser test
+
+Working directory: /work/parser
+
+Subagent: typescript-reviewer
+What it does: Reviews typescript code
+
+Its one-line task for this request: Check the types in the parser diff
+
+Its first steps, already shown to the user; begin the prompt with them, phrased as instructions to the subagent: Starts with tsc on the parser package, then reads the diff
+
+Write the prompt to give this subagent.
+```
+
+The dim line is then replaced by the draft Haiku writes. Its exact words vary from call to call, but the draft opens with those steps as instructions to the agent, for example:
+
+```text
+Run tsc on the parser package in /work/parser and note every type error. Then read the
+diff of the parser changes and check which of those errors it introduced or hides.
+Report each problem with the file and line, and say which one most likely makes the
+parser test flaky.
+```
+
+A row whose task came without a short draft sends the same request without the `Its first steps` line; if the tasks call failed, the row has no task either, and the `Its one-line task` line is left out too.
+
 ## Use
 
 | Command | Does |
