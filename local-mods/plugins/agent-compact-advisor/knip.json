@@ -1,0 +1,10 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "hooks/register.ts",
+    "tests/**/*.test.ts",
+    "eslint/suppression-guard.ts"
+  ],
+  "project": ["{hooks,tests}/**/*.ts", "eslint/**/*.ts", "*.config.ts"],
+  "ignoreDependencies": ["claude-code"]
+}

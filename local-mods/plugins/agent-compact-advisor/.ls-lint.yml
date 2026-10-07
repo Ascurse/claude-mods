@@ -1,0 +1,11 @@
+ls:
+  "{hooks,tests,types,engine-types,eslint,scripts}/**/*":
+    .ts: kebab-case
+    .tsx: kebab-case
+    .d.ts: kebab-case
+    .json: kebab-case
+    .sh: kebab-case
+    .md: kebab-case | screamingsnakecase
+ignore:
+  - node_modules
+  - .claude-plugin/types

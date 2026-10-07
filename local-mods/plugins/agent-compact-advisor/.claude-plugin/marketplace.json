@@ -1,0 +1,17 @@
+{
+  "name": "agent-compact-advisor",
+  "owner": {
+    "name": "apolenkov",
+    "url": "https://github.com/apolenkov"
+  },
+  "metadata": {
+    "description": "Status line score for how good a moment it is to /compact, a ready /compact that keeps goal, decisions, leftovers and paths, and that template added to every compaction."
+  },
+  "plugins": [
+    {
+      "name": "agent-compact-advisor",
+      "source": "./",
+      "description": "Status line score for how good a moment it is to /compact, a ready /compact that keeps goal, decisions, leftovers and paths, and that template added to every compaction."
+    }
+  ]
+}

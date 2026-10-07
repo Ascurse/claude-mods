@@ -1,0 +1,99 @@
+{
+  "name": "agent-compact-advisor",
+  "version": "0.2.0",
+  "description": "Status line score 0-100 for how good a moment it is to /compact now, with reasons; offers a ready /compact that keeps goal, decisions, leftovers and paths, and adds that template to every compaction. Never compacts by itself.",
+  "author": {
+    "name": "apolenkov",
+    "url": "https://github.com/apolenkov"
+  },
+  "repository": "https://github.com/apolenkov/agent-compact-advisor",
+  "license": "MIT",
+  "keywords": [
+    "mod",
+    "function-hooks",
+    "compact",
+    "context",
+    "status-line"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "threshold": {
+      "type": "number",
+      "title": "Suggest at score",
+      "description": "Score (0-100) from which the ready /compact is suggested",
+      "default": 70
+    },
+    "minTokens": {
+      "type": "number",
+      "title": "Too small below (tokens)",
+      "description": "Context below this scores 0: nothing worth compacting yet",
+      "default": 100000
+    },
+    "fullTokens": {
+      "type": "number",
+      "title": "Full at (tokens)",
+      "description": "Context at which the fill part of the score is complete",
+      "default": 300000
+    },
+    "cacheTtlMin": {
+      "type": "number",
+      "title": "Cache TTL (min)",
+      "description": "Minutes after a turn the prompt cache counts as warm (5, or 60 with the 1-hour cache)",
+      "default": 5
+    },
+    "systemOneUrl": {
+      "type": "string",
+      "title": "System One URL",
+      "description": "Kev's System One base URL for P1 (loopback only; empty turns P1 off)",
+      "default": "http://127.0.0.1:8010"
+    },
+    "kevModel": {
+      "type": "string",
+      "title": "Kev model",
+      "description": "System One model asked for P1",
+      "default": "kev-latest"
+    },
+    "leftoverPrefixes": {
+      "type": "string",
+      "title": "Leftover line prefixes",
+      "description": "|-separated line prefixes that report leftovers",
+      "default": "Хвосты для агента:|Хвосты для владельца:"
+    },
+    "noneWords": {
+      "type": "string",
+      "title": "None words",
+      "description": "|-separated values meaning no leftovers",
+      "default": "нет|none"
+    },
+    "guardCompactions": {
+      "type": "boolean",
+      "title": "Template on every compaction",
+      "description": "Add the preservation template to every /compact and auto-compaction of the main conversation",
+      "default": true
+    },
+    "ignoreLeftovers": {
+      "type": "boolean",
+      "title": "Ignore leftovers",
+      "description": "Leftovers neither gate nor cap the score nor count in it; for a coordinator session that always waits on others",
+      "default": false
+    },
+    "language": {
+      "type": "string",
+      "title": "Language",
+      "description": "Words of the status line and explanation: ru or en",
+      "default": "ru"
+    },
+    "alertPercent": {
+      "type": "number",
+      "title": "Alert at context share (%)",
+      "description": "From this share of the window the status line alerts, a toast shows once and /compact is suggested at turn end, whatever the score; 0 turns it off",
+      "default": 60
+    },
+    "statusLine": {
+      "type": "boolean",
+      "title": "Status line",
+      "description": "Show the score on the status line",
+      "default": true
+    }
+  }
+}

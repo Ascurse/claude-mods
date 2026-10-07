@@ -1,0 +1,170 @@
+name: night-review
+
+# Code review by alibaba/open-code-review (OCR) on an OpenCode Go model.
+#   review  every same-repo PR once `ci` has run on it (also after auto-merge) or
+#           on demand by number: inline comments and one sticky summary; a
+#           fork's PR is skipped (the jobs show as skipped)
+#   scan    monthly full-file `ocr scan` of main, uploaded as an artifact
+# The token lives in the `ci` environment, so both jobs name it. `workflow_run`
+# (like ci-autofix) hands a Dependabot PR the same secrets and a write token as
+# any other PR; the OCR action checks out the base and reads the PR head as git
+# objects only, so no PR code runs here.
+# Decision record: backlog TASK-282.3 (doc-312).
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+  schedule:
+    - cron: "23 3 1 * *"
+  # Without `pr`: the monthly scan on demand. With `pr`: review that PR again.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to review (empty runs the scan)
+        required: false
+
+permissions: {}
+
+env:
+  OCR_VERSION: 1.12.12
+  # OpenCode Go, OpenAI-compatible endpoint; ZDR model (see ci-autofix.yml).
+  OCR_LLM_URL: https://opencode.ai/zen/go/v1/chat/completions
+  OCR_LLM_MODEL: deepseek-v4.1-flash
+  # Total tokens (input + output) one review or scan may spend; OCR stops
+  # dispatching work past it and still publishes what it found.
+  REVIEW_TOKEN_BUDGET: "3000000"
+  SCAN_TOKEN_BUDGET: "6000000"
+  # OpenCode Go refuses a request without a session id (HTTP 400 MissingSessionID).
+  OCR_LLM_EXTRA_HEADERS: x-opencode-session=night-review-${{ github.run_id }}
+
+jobs:
+  gate:
+    # Not a fork's run, and the run belongs to a pull request.
+    if: >-
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.head_repository.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && inputs.pr != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      pr: ${{ steps.gate.outputs.pr }}
+      sha: ${{ steps.gate.outputs.sha }}
+      base: ${{ steps.gate.outputs.base }}
+      go: ${{ steps.gate.outputs.go }}
+    steps:
+      - id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          PR_INPUT: ${{ inputs.pr }}
+        run: |
+          set -euo pipefail
+          echo "go=false" >> "$GITHUB_OUTPUT"
+          # Auto-merge often lands the PR before ci's run is reported here, so a
+          # merged PR is reviewed too (its head stays readable as pull/N/head).
+          if [ -n "$PR_INPUT" ]; then
+            [[ "$PR_INPUT" =~ ^[1-9][0-9]*$ ]] || { echo "bad PR number"; exit 0; }
+            pr=$(gh api "repos/$REPO/pulls/$PR_INPUT")
+          else
+            pr=$(gh api -X GET "repos/$REPO/pulls" -f state=all -f head="${REPO%%/*}:$HEAD_BRANCH" --jq '.[0] // empty')
+          fi
+          [ -n "$pr" ] || { echo "no PR for ${HEAD_BRANCH:-$PR_INPUT}"; exit 0; }
+          read -r number head_repo head_sha head_ref base draft < <(jq -r '[.number, .head.repo.full_name, .head.sha, .head.ref, .base.ref, .draft] | @tsv' <<<"$pr")
+          [ "$head_repo" = "$REPO" ] || { echo "head repo $head_repo is not $REPO"; exit 0; }
+          [ -n "$PR_INPUT" ] || [ "$head_sha" = "$HEAD_SHA" ] || { echo "stale run: PR head moved on"; exit 0; }
+          [ "$draft" = false ] || { echo "draft PR"; exit 0; }
+          [[ "$head_ref" != release-please--* ]] || { echo "release-please PR"; exit 0; }
+          {
+            echo "pr=$number"
+            echo "sha=$head_sha"
+            echo "base=$base"
+            echo "go=true"
+          } >> "$GITHUB_OUTPUT"
+
+  review:
+    needs: gate
+    if: needs.gate.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: ci
+    permissions:
+      contents: read
+      pull-requests: write
+    concurrency:
+      group: night-review-${{ needs.gate.outputs.pr }}
+      cancel-in-progress: true
+    steps:
+      - name: Token is present
+        env:
+          OCR_LLM_AUTH_TOKEN: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+        run: '[ -n "$OCR_LLM_AUTH_TOKEN" ] || { echo "::error::OCR_LLM_AUTH_TOKEN is empty in this trigger context"; exit 1; }'
+      - uses: alibaba/open-code-review@182898cf522da3d04157b422752d028417974e19 # v1.12.12
+        with:
+          llm_url: ${{ env.OCR_LLM_URL }}
+          llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+          llm_model: ${{ env.OCR_LLM_MODEL }}
+          llm_use_anthropic: "false"
+          llm_extra_headers: ${{ env.OCR_LLM_EXTRA_HEADERS }}
+          ocr_version: ${{ env.OCR_VERSION }}
+          base_ref: ${{ needs.gate.outputs.base }}
+          head_sha: ${{ needs.gate.outputs.sha }}
+          pr_number: ${{ needs.gate.outputs.pr }}
+          sticky_summary: "true"
+          incremental: "true"
+          checkpoint_range: "true"
+          max_tokens_budget: ${{ env.REVIEW_TOKEN_BUDGET }}
+          # Low findings and style/documentation ones go to the summary: an unresolved
+          # inline thread blocks auto-merge (conversation resolution is required on main).
+          # `low` routes only low; `medium` would route medium too.
+          route_severity_below: low
+          route_categories: style,documentation
+
+  scan:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.pr == '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: ci
+    permissions:
+      contents: read
+    concurrency:
+      group: night-review-scan
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - name: Install OCR
+        run: npm install --global --no-audit --no-fund "@alibaba-group/open-code-review@$OCR_VERSION"
+      - name: Scan the repository
+        env:
+          OCR_LLM_TOKEN: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "$OCR_LLM_TOKEN" ] || { echo "::error::OCR_LLM_AUTH_TOKEN is empty in this trigger context"; exit 1; }
+          ocr config unset provider
+          ocr config set llm.url "$OCR_LLM_URL"
+          ocr config set llm.model "$OCR_LLM_MODEL"
+          ocr config set llm.use_anthropic false
+          ocr config set llm.extra_headers "$OCR_LLM_EXTRA_HEADERS"
+          ocr config set llm.protocol openai
+          # shellcheck disable=SC2016  # OCR runs the command, which expands the variable
+          ocr config set llm.auth_token_cmd 'printf "%s" "$OCR_LLM_TOKEN"'
+          # Thinking mode off, as the OCR action does by default.
+          ocr config set llm.extra_body '{"thinking": {"type": "disabled"}}'
+          ocr scan --audience agent --format json --output "$RUNNER_TEMP/ocr-scan.json" \
+            --max-tokens-budget "$SCAN_TOKEN_BUDGET" --exclude 'package-lock.json'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ocr-scan
+          path: ${{ runner.temp }}/ocr-scan.json
+          retention-days: 90
