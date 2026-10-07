@@ -102,7 +102,12 @@ export type CrewRow = {
   error: string | null
   /** Одна строка Haiku: что агент сделал бы по запросу; null или нет, пока ответа нет. */
   task?: string | null
+  /** Краткий черновик Haiku: с чего агент начнёт; рисуется под именем до run. */
+  plan?: string | null
 }
+
+/** Задача агента и краткий черновик: с чего он начнёт; plan null, когда Haiku его не дал. */
+export type TaskInfo = { task: string; plan: string | null }
 
 /** Теги агентов из фиксированного словаря TAGS (hooks/crew.ts). */
 export type Tag = string

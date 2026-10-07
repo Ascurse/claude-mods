@@ -1,9 +1,9 @@
 // Pure data of the CREW panel: which agents suit the prompt, and the text sent to the model.
 // Nothing here touches `$`, so every rule is testable directly.
-import type { CatalogEntry, Crew, CrewRow, RowPhase, Tag, TagMap } from '../types'
+import type { CatalogEntry, Crew, CrewRow, RowPhase, Tag, TagMap, TaskInfo } from '../types'
 import { fnv1a } from './cache/jev'
 
-export type { CatalogEntry, Crew, CrewRow, RowPhase, Tag, TagMap }
+export type { CatalogEntry, Crew, CrewRow, RowPhase, Tag, TagMap, TaskInfo }
 
 export const CREW_SIZE = 5
 
@@ -180,20 +180,28 @@ export const pushHistory = (history: Record<string, string[]>, agent: string, te
 // ---------------------------------------------------------------- одна строка-задача на агента
 
 export const TASK_MAX = 120
+/** Предел строки «с чего начнёт» под именем агента. */
+export const PLAN_MAX = 160
 /** Пометка вместо задачи, когда Haiku её не дал. */
 export const NO_TASK = 'нет задачи'
 
-/** Один запрос Haiku на всю пятёрку: что каждый агент сделал бы по этому запросу. */
+/** Один запрос Haiku на всю пятёрку: что каждый агент сделал бы по этому запросу и с чего начал бы. */
 export const taskRequest = (entries: readonly CatalogEntry[], ctx: { query: string; cwd: string }) => ({
   model: 'haiku',
-  maxTokens: 800,
+  maxTokens: 1500,
   system:
-    'You write one-line tasks for subagents. Reply with one JSON object only, no preface and no code fences: {"<agent name>": "<one line: what this agent would do for this request>"}.',
+    'You write one-line tasks for subagents. Reply with one JSON object only, no preface and no code fences: {"<agent name>": {"task": "<one line: what this agent would do for this request>", "plan": "<one or two short sentences: the first concrete steps it would take>"}}.',
   prompt: `User request:\n${ctx.query}\n\nWorking directory: ${ctx.cwd}\n\nAgents:\n${entries.map(e => `- ${e.agent}: ${(e.description.split('\n').find(l => l.trim() !== '') ?? '').trim()}`).join('\n')}`,
 })
 
-/** Строки из ответа Haiku: неизвестные агенты, пустые и нестроковые значения отбрасываются, строка режется до TASK_MAX. */
-export const parseTaskAnswer = (text: string, entries: readonly CatalogEntry[]): Record<string, string> => {
+const oneLine = (value: unknown, max: number): string =>
+  typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, max).trim() : ''
+
+/**
+ * Задачи из ответа Haiku: {task, plan} или по-старому строка-задача без plan. Неизвестные агенты и записи
+ * без задачи отбрасываются; задача режется до TASK_MAX, plan до PLAN_MAX.
+ */
+export const parseTaskAnswer = (text: string, entries: readonly CatalogEntry[]): Record<string, TaskInfo> => {
   const from = text.indexOf('{')
   const to = text.lastIndexOf('}')
   if (from < 0 || to < from) return {}
@@ -205,11 +213,13 @@ export const parseTaskAnswer = (text: string, entries: readonly CatalogEntry[]):
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {}
   const known = new Set(entries.map(e => e.agent))
-  const out: Record<string, string> = {}
+  const out: Record<string, TaskInfo> = {}
   for (const [agent, value] of Object.entries(parsed)) {
-    if (!known.has(agent) || typeof value !== 'string') continue
-    const line = value.replace(/\s+/g, ' ').trim().slice(0, TASK_MAX).trim()
-    if (line !== '') out[agent] = line
+    if (!known.has(agent)) continue
+    const isObject = typeof value === 'object' && value !== null && !Array.isArray(value)
+    const task = oneLine(isObject ? (value as { task?: unknown }).task : value, TASK_MAX)
+    const plan = isObject ? oneLine((value as { plan?: unknown }).plan, PLAN_MAX) : ''
+    if (task !== '') out[agent] = { task, plan: plan === '' ? null : plan }
   }
   return out
 }

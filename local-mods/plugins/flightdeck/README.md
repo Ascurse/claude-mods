@@ -66,7 +66,7 @@ https://github.com/user-attachments/assets/9ad0fcc3-c81c-427a-a743-f7b6c49f5885
 | **loops** | model loops that match no card: workflow agents, compactions, memory forks | `turn.step` ids no card claims |
 | **receipt** | the running turn, or the last one: duration, agents, edits, errors, cost added | `turn.start`, `turn.complete` |
 | **log** | prompts, spawns, completions, consults, edits, errors and denials; filtered to one agent while you view its transcript | all of the above |
-| **crew** | the 5 agents that fit the current request, picked from every agent the session offers, narrowed by topic tags (`5 of 38 · jev · frontend, testing`) once the catalog is tagged. Beside each name Haiku's one-line task for that agent, or `нет задачи` when Haiku gave none. `run` (a framed button) has Haiku write the agent's prompt; the draft stays under the row, in full, with `start` (spawn it in the background), `edit` (a focused pane with the draft; Enter saves it, Escape leaves it as it was) and `drop`. The header says `· jev` or `· by words` | `agent.offer`, `turn.start`, `jev pick-skill`, `$.model.complete`, `$.agent.spawn`, `$.store`, `$.ui.open` |
+| **crew** | the 5 agents that fit the current request, picked from every agent the session offers, narrowed by topic tags (`5 of 38 · jev · frontend, testing`) once the catalog is tagged. Beside each name Haiku's one-line task for that agent, or `нет задачи` when Haiku gave none; under the name, one dim line with a short draft of how the agent would start, until `run` replaces it with the full prompt. `run` (a framed button) has Haiku write the agent's prompt; the draft stays under the row, in full, with `start` (spawn it in the background), `edit` (a focused pane with the draft; Enter saves it, Escape leaves it as it was) and `drop`. The header says `· jev` or `· by words` | `agent.offer`, `turn.start`, `jev pick-skill`, `$.model.complete`, `$.agent.spawn`, `$.store`, `$.ui.open` |
 
 Connectors animate only while work flows: a turn is running, an agent is running, or a consult is open. Panels with nothing to show take no room, so a session without subagents shows just the main box and the log.
 
@@ -114,7 +114,7 @@ What it keeps: short summaries (a tool name plus a path or command, with credent
 The **crew** panel is the exception, and only it:
 
 - on each of your prompts it writes the agent catalog (names and descriptions) as `$TMPDIR/flightdeck-crew/<agent>/SKILL.md` and runs `jev pick-skill` on it, which sends your prompt to Jev; when `jev` is missing or fails, the panel falls back to word match;
-- every prompt also sends the query, the working directory and the 5 agents' descriptions to Haiku in one call, for the one-line tasks beside the names;
+- every prompt also sends the query, the working directory and the 5 agents' descriptions to Haiku in one call, for the one-line tasks beside the names and the short drafts under them;
 - once per catalog, Haiku also gets the agent names and descriptions (about 50 per call) to tag them by topic; the tags narrow the list, and jev picks the tags of your prompt;
 - `run` calls Haiku with your prompt, the working directory, the agent's description and its one-line task;
 - `$.store` keeps, across sessions, the tag map, a cache of the last 50 jev answers and of the one-line tasks (a repeated prompt asks neither jev nor Haiku again), and the last 10 edits per agent;

@@ -83,7 +83,7 @@ import {
   taskRequest,
   wordPicks,
 } from './crew'
-import type { CrewRow, RowPhase, Tag } from './crew'
+import type { CrewRow, RowPhase, Tag, TaskInfo } from './crew'
 import { getJev, getTasks, jevKey, jevScope, putJev, putTasks, taskKey } from './cache/jev'
 
 const PANE = 'flightdeck'
@@ -280,7 +280,7 @@ const crewMemo = {
   tags: null as { hash: string; map: TagMap } | null,
   taggedHash: '',
   // Один запрос строк-задач на ключ: повторный refreshCrew (после разметки) ждёт тот же ответ
-  pendingTasks: new Map<string, Promise<Record<string, string>>>(),
+  pendingTasks: new Map<string, Promise<Record<string, TaskInfo>>>(),
 }
 
 async function catalogRoot($: EngineInterface) {
@@ -391,7 +391,7 @@ async function fetchTasks($: EngineInterface, query: string, entries: CatalogEnt
   if (cached) return cached
   const inFlight = crewMemo.pendingTasks.get(key)
   if (inFlight) return inFlight
-  const asked = (async () => {
+  const asked = (async (): Promise<Record<string, TaskInfo>> => {
     const done = await $.model.complete(taskRequest(picked, { query, cwd }))
     const tasks = done.isAnswered ? parseTaskAnswer(done.text, picked) : {}
     if (Object.keys(tasks).length > 0) await putTasks(storeOf($), key, tasks).catch(() => undefined)
@@ -413,7 +413,11 @@ async function loadTasks($: EngineInterface, query: string, entries: CatalogEntr
     if (crewMemo.lastQuery === query) {
       await update($, crew, c => {
         const n = normalizeCrew(c)
-        return { ...n, rows: n.rows.map(r => (tasks[r.agent] ? { ...r, task: tasks[r.agent] } : r)) }
+        const withTask = (r: CrewRow): CrewRow => {
+          const t = tasks[r.agent]
+          return t ? { ...r, task: t.task, plan: t.plan } : r
+        }
+        return { ...n, rows: n.rows.map(withTask) }
       })
     }
   } catch {
@@ -1323,6 +1327,10 @@ export const register: Register = (on, options) => {
                   {(row.phase === 'draft' || row.phase === 'started') && row.draft ? (
                     <Text wrap="wrap" dimColor={row.phase === 'started'}>
                       {row.draft}
+                    </Text>
+                  ) : row.plan ? (
+                    <Text dimColor wrap="truncate">
+                      {row.plan}
                     </Text>
                   ) : null}
                   {actions(row)}

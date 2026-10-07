@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
-import { NO_TASK, TASK_MAX, catalogHash, draftRequest, parseTaskAnswer, taskRequest } from '../hooks/crew'
+import { NO_TASK, PLAN_MAX, TASK_MAX, catalogHash, draftRequest, parseTaskAnswer, taskRequest } from '../hooks/crew'
+import type { TaskInfo } from '../hooks/crew'
 import { TASKS_KEY, TASK_LIMIT, getTasks, putTasks, taskKey } from '../hooks/cache/jev'
 import { CATALOG, DRAFT, JEV_FIVE, OTHER_QUERY, PROJECT, QUERY, SURFACES, deferred, entry, pane, ready, rig } from './crew-rig'
 import type { ModelAnswer } from './crew-rig'
@@ -15,8 +16,26 @@ const TASKS: Record<string, string> = {
   'flutter-reviewer': 'Skim the dart widgets for mistakes',
   'test-planner': 'List the missing coverage',
 }
-const answerTasks = (): ModelAnswer => ({ isAnswered: true, text: JSON.stringify(TASKS) })
+const PLANS: Record<string, string> = {
+  'typescript-reviewer': 'Starts with tsc on the parser package, then reads the diff',
+  'security-reviewer': 'Starts by listing every handler that reads the request body',
+  'Code Reviewer': 'Starts from the largest changed file',
+  'flutter-reviewer': 'Starts with flutter analyze',
+  'test-planner': 'Starts by mapping tests to changed functions',
+}
+const INFOS: Record<string, TaskInfo> = Object.fromEntries(Object.keys(TASKS).map(a => [a, { task: TASKS[a] as string, plan: PLANS[a] as string }]))
+const answerTasks = (): ModelAnswer => ({ isAnswered: true, text: JSON.stringify(INFOS) })
+const answerOldTasks = (): ModelAnswer => ({ isAnswered: true, text: JSON.stringify(TASKS) })
 const fiveEntries = JEV_FIVE.map(a => CATALOG.find(e => e.agent === a) ?? entry(a, ''))
+
+type Drawn = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+
+/** Вторая строка ряда агента: Text под именем, если он есть (дальше идут кнопки в Box). */
+const lineUnderName = async (ui: { findAll: (q: { type: string }) => Promise<Drawn[]> }, agent: string): Promise<Drawn | undefined> => {
+  const row = (await ui.findAll({ type: 'Box' })).find(b => b.props?.key === `crew-${agent}`)
+  const second = (row?.children as Drawn[] | undefined)?.[1]
+  return second?.type === 'Text' ? second : undefined
+}
 
 const fakeStore = (init: Record<string, unknown> = {}) => {
   const data = new Map<string, unknown>(Object.entries(init))
@@ -29,6 +48,7 @@ test('taskRequest is one haiku call carrying the query, cwd and every agent with
   const req = taskRequest(fiveEntries, { query: 'fix the flaky parser test', cwd: '/work/parser' })
   expect(req.model).toBe('haiku')
   expect(/one-line tasks/i.test(req.system)).toBe(true)
+  expect(req.system).toContain('"plan"')
   expect(req.prompt).toContain('fix the flaky parser test')
   expect(req.prompt).toContain('/work/parser')
   for (const e of fiveEntries) {
@@ -42,14 +62,30 @@ test('parseTaskAnswer keeps known agents, trims, and cuts a line to TASK_MAX cha
   const text = JSON.stringify({ [FIRST]: `  ${long}  `, 'security-reviewer': '  Look for secrets  ', ghost: 'not in the crew' })
   const out = parseTaskAnswer(text, fiveEntries)
   expect(Object.keys(out).sort()).toEqual([FIRST, 'security-reviewer'].sort())
-  expect((out[FIRST] ?? '').length <= TASK_MAX).toBe(true)
-  expect((out[FIRST] ?? '').startsWith('xxx')).toBe(true)
-  expect(out['security-reviewer']).toBe('Look for secrets')
+  expect((out[FIRST]?.task ?? '').length <= TASK_MAX).toBe(true)
+  expect((out[FIRST]?.task ?? '').startsWith('xxx')).toBe(true)
+  expect(out['security-reviewer']).toEqual({ task: 'Look for secrets', plan: null })
+})
+
+test('parseTaskAnswer reads {task, plan}, cuts the plan to PLAN_MAX on one line, and drops an entry without a task', () => {
+  const long = 'y'.repeat(PLAN_MAX + 50)
+  const text = JSON.stringify({
+    [FIRST]: { task: ' Check types ', plan: ` Runs tsc\n  first ` },
+    'security-reviewer': { task: 'Look for secrets', plan: long },
+    'Code Reviewer': { plan: 'no task here' },
+    'test-planner': { task: 'List gaps', plan: 7 },
+  })
+  const out = parseTaskAnswer(text, fiveEntries)
+  expect(out[FIRST]).toEqual({ task: 'Check types', plan: 'Runs tsc first' })
+  expect((out['security-reviewer']?.plan ?? '').length <= PLAN_MAX).toBe(true)
+  expect((out['security-reviewer']?.plan ?? '').startsWith('yyy')).toBe(true)
+  expect(out['Code Reviewer']).toBeUndefined()
+  expect(out['test-planner']).toEqual({ task: 'List gaps', plan: null })
 })
 
 test('parseTaskAnswer reads JSON inside a fence or preface, and drops empty or non-string lines', () => {
   const text = 'Sure:\n```json\n' + JSON.stringify({ [FIRST]: 'Check types', 'test-planner': '   ', 'Code Reviewer': 7 }) + '\n```'
-  expect(parseTaskAnswer(text, fiveEntries)).toEqual({ [FIRST]: 'Check types' })
+  expect(parseTaskAnswer(text, fiveEntries)).toEqual({ [FIRST]: { task: 'Check types', plan: null } })
 })
 
 test('parseTaskAnswer on an unparsable answer is empty', () => {
@@ -69,13 +105,19 @@ test('draftRequest passes the one-line task as extra context, and is unchanged w
 
 test('the task cache keeps fifty entries, drops the oldest, and tolerates a damaged value', async () => {
   const store = fakeStore()
-  for (let i = 0; i < TASK_LIMIT + 1; i++) await putTasks(store, `k${i}`, { a: `t${i}` })
+  for (let i = 0; i < TASK_LIMIT + 1; i++) await putTasks(store, `k${i}`, { a: { task: `t${i}`, plan: null } })
   expect(await getTasks(store, 'k0')).toBeUndefined()
-  expect(await getTasks(store, `k${TASK_LIMIT}`)).toEqual({ a: `t${TASK_LIMIT}` })
+  expect(await getTasks(store, `k${TASK_LIMIT}`)).toEqual({ a: { task: `t${TASK_LIMIT}`, plan: null } })
   const damaged = fakeStore({ [TASKS_KEY]: 'junk' })
   expect(await getTasks(damaged, 'k')).toBeUndefined()
-  await putTasks(damaged, 'k', { a: 'b' })
-  expect(await getTasks(damaged, 'k')).toEqual({ a: 'b' })
+  await putTasks(damaged, 'k', { a: { task: 'b', plan: 'c' } })
+  expect(await getTasks(damaged, 'k')).toEqual({ a: { task: 'b', plan: 'c' } })
+})
+
+test('the task cache does not read entries of the old shape, where a task was a bare string', async () => {
+  const store = fakeStore({ [TASKS_KEY]: [{ key: 'k', tasks: { a: 'old line' } }], 'crew.taskCache': [{ key: 'k', tasks: { a: 'old line' } }] })
+  expect(TASKS_KEY).not.toBe('crew.taskCache')
+  expect(await getTasks(store, 'k')).toBeUndefined()
 })
 
 test('taskKey depends on the query, the catalog, the crew and the project folder', () => {
@@ -96,6 +138,21 @@ test('a 5-row list makes exactly one haiku call for tasks, with all five agents 
   const prompt = r.taskCompletes[0]?.prompt ?? ''
   for (const a of JEV_FIVE) expect(prompt).toContain(a)
   expect(prompt).toContain(QUERY)
+})
+
+test('the old answer format, a bare string per agent, still fills the task line and draws no plan', async ($, on) => {
+  const r = rig(on, { task: answerOldTasks })
+  await ready($, r)
+  const ui = await $.ui.mount({ ...pane(86), surface: 'terminal' })
+  expect(await ui.find({ text: TASKS[FIRST] as string })).toBeDefined()
+  expect(await lineUnderName(ui, FIRST)).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a session that cached tasks in the old shape asks haiku again', async ($, on) => {
+  const r = rig(on, { store: { 'crew.taskCache': [{ key: taskKey(QUERY, catalogHash(CATALOG), JEV_FIVE, PROJECT), tasks: TASKS }] }, task: answerTasks })
+  await ready($, r)
+  expect(r.taskCompletes.length).toBe(1)
 })
 
 test('the list lands before the tasks answer arrives, and the task is written once it does', async ($, on) => {
@@ -126,6 +183,43 @@ for (const surface of SURFACES) {
     const beside = JSON.stringify(nameLine)
     expect(beside).toContain(TASKS[FIRST] as string)
     expect(beside).not.toContain('Reviews typescript code') // the description is not beside the name
+    await ui.unmount()
+  })
+
+  test(`${surface}: before run the plan is drawn dim on its own line under the name, one line of at most PLAN_MAX`, async ($, on) => {
+    const r = rig(on, { task: answerTasks })
+    await ready($, r)
+    const ui = await $.ui.mount({ ...pane(86), surface })
+    const plan = await lineUnderName(ui, FIRST)
+    expect(plan?.props?.dimColor).toBe(true)
+    expect(plan?.props?.wrap).toBe('truncate')
+    expect(plan?.children?.[0]).toBe(PLANS[FIRST])
+    expect(String(plan?.children?.[0]).length <= PLAN_MAX).toBe(true)
+    const row = (await ui.findAll({ type: 'Box' })).find(b => b.props.key === `crew-${FIRST}`)
+    const lines = (row?.children as unknown[] | undefined) ?? []
+    expect(JSON.stringify(lines[0])).not.toContain(PLANS[FIRST] as string) // not beside the name
+    expect(JSON.stringify(lines[1])).toContain(PLANS[FIRST] as string)
+    expect(r.completes.length).toBe(0) // no run pressed
+    await ui.unmount()
+  })
+
+  test(`${surface}: once the draft is written it replaces the plan line`, async ($, on) => {
+    const r = rig(on, { task: answerTasks })
+    await ready($, r)
+    const ui = await $.ui.mount({ ...pane(86), surface })
+    await ui.press({ key: `crew-run-${FIRST}` })
+    expect(await ui.find({ text: DRAFT })).toBeDefined()
+    expect(await ui.find({ text: PLANS[FIRST] as string })).toBeUndefined()
+    expect(await ui.find({ text: PLANS['security-reviewer'] as string })).toBeDefined() // other rows keep theirs
+    await ui.unmount()
+  })
+
+  test(`${surface}: a Haiku failure draws no plan line and leaves the row`, async ($, on) => {
+    const r = rig(on, { task: () => { throw new Error('haiku is down') } })
+    await ready($, r)
+    const ui = await $.ui.mount({ ...pane(86), surface })
+    expect(await ui.find({ key: `crew-run-${FIRST}` })).toBeDefined()
+    expect(await lineUnderName(ui, FIRST)).toBeUndefined()
     await ui.unmount()
   })
 
@@ -204,18 +298,19 @@ test('a repeated query makes no tasks call', async ($, on) => {
 test('a fresh session with only $.store behind it makes no tasks call for a seen query', async ($, on) => {
   const key = taskKey(QUERY, catalogHash(CATALOG), JEV_FIVE, PROJECT)
   const prior = fakeStore()
-  await putTasks(prior, key, TASKS)
+  await putTasks(prior, key, INFOS)
   const r = rig(on, { store: Object.fromEntries(prior.data), task: () => { throw new Error('must not be asked') } })
   await ready($, r)
   expect(r.taskCompletes.length).toBe(0)
   const ui = await $.ui.mount({ ...pane(86), surface: 'terminal' })
   expect(await ui.find({ text: TASKS[FIRST] as string })).toBeDefined()
+  expect(await ui.find({ text: PLANS[FIRST] as string })).toBeDefined()
   await ui.unmount()
 })
 
 test('the same query in another project folder asks haiku again instead of reusing the old tasks', async ($, on) => {
   const prior = fakeStore()
-  await putTasks(prior, taskKey(QUERY, catalogHash(CATALOG), JEV_FIVE, '/work/other'), TASKS)
+  await putTasks(prior, taskKey(QUERY, catalogHash(CATALOG), JEV_FIVE, '/work/other'), INFOS)
   const r = rig(on, { store: Object.fromEntries(prior.data), task: answerTasks })
   await ready($, r)
   expect(r.taskCompletes.length).toBe(1)
@@ -224,10 +319,10 @@ test('the same query in another project folder asks haiku again instead of reusi
 test('the tasks answer is stored under the cache key for the next session', async ($, on) => {
   const r = rig(on, { task: answerTasks })
   await ready($, r)
-  const stored = r.store.get(TASKS_KEY) as { key: string; tasks: Record<string, string> }[]
+  const stored = r.store.get(TASKS_KEY) as { key: string; tasks: Record<string, TaskInfo> }[]
   expect(stored.length).toBe(1)
   expect(stored[0]?.key).toBe(taskKey(QUERY, catalogHash(CATALOG), JEV_FIVE, PROJECT))
-  expect(stored[0]?.tasks).toEqual(TASKS)
+  expect(stored[0]?.tasks).toEqual(INFOS)
 })
 
 test('a failed tasks call is not cached', async ($, on) => {
