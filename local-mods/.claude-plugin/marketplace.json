@@ -1,0 +1,34 @@
+{
+  "name": "local-mods",
+  "description": "Personal Claude Code mods",
+  "owner": {
+    "name": "ascurse"
+  },
+  "plugins": [
+    {
+      "name": "bead-band",
+      "source": "./plugins/bead-band",
+      "description": "In-progress Beads task, its src/<branch> merge target and the current worktree/branch above the prompt"
+    },
+    {
+      "name": "next-steps",
+      "source": "./plugins/next-steps",
+      "description": "Suggests up to 3 next steps above the prompt (local copy of pawandeepdhall/claude-mods, restyled)"
+    },
+    {
+      "name": "agent-flow",
+      "source": "./plugins/agent-flow",
+      "description": "Live tree of subagents in a pane (local copy of Charlie0113-T/claude-agent-flow, restyled)"
+    },
+    {
+      "name": "agent-compact-advisor",
+      "source": "./plugins/agent-compact-advisor",
+      "description": "Status line score for a good /compact moment (local copy of apolenkov/agent-compact-advisor, restyled)"
+    },
+    {
+      "name": "flightdeck",
+      "source": "./plugins/flightdeck",
+      "description": "Session cockpit pane with a CREW panel: Jev picks agents for the turn, Haiku drafts the prompt, run spawns it (local copy of scasella/claude-flightdeck)"
+    }
+  ]
+}
