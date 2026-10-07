@@ -1,0 +1,49 @@
+{
+  "name": "crew",
+  "version": "0.1.0",
+  "description": "Crew: suggests the 5 session agents that fit your request, drafts a task prompt with Haiku and starts the agent in the background, from its own pane",
+  "author": {
+    "name": "Stephen Casella",
+    "url": "https://github.com/scasella"
+  },
+  "homepage": "https://github.com/scasella/claude-flightdeck",
+  "repository": "https://github.com/scasella/claude-flightdeck",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "claude-code-mod",
+    "claude-code-plugin",
+    "subagents",
+    "agents",
+    "tui"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "crewRun": {
+      "title": "Crew run",
+      "description": "draft: the model writes a task prompt and waits for start, edit or drop; direct: the agent starts at once with that prompt",
+      "type": "string",
+      "options": [
+        "draft",
+        "direct"
+      ],
+      "default": "draft"
+    },
+    "palette": {
+      "title": "Palette",
+      "description": "theme follows your Claude Code theme (light, dark, colour-blind); pastel is fixed colours tuned for dark terminals",
+      "type": "string",
+      "options": [
+        "theme",
+        "pastel"
+      ],
+      "default": "theme"
+    },
+    "autoOpen": {
+      "title": "Open automatically",
+      "description": "Open the pane when Crew has agents to suggest for a prompt",
+      "type": "boolean",
+      "default": true
+    }
+  }
+}

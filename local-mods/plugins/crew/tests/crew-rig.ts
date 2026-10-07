@@ -61,6 +61,8 @@ export type Rig = {
   /** Панели, открытые через $.ui.open, и закрытые через $.ui.close. */
   opens: { id: string; focus?: true; closeOnEscape?: true }[]
   closes: string[]
+  /** Всплывающие строки $.ui.toast: сюда идут сбои запуска очереди. */
+  toasts: string[]
   /** Хранилище $.store в памяти. */
   store: Map<string, unknown>
   /** Event order: 'write' | 'jev' */
@@ -99,13 +101,13 @@ export function rig(on: On, o: RigOptions = {}): Rig {
     submits: [],
     opens: [],
     closes: [],
+    toasts: [],
     store: new Map(Object.entries(o.store ?? {})),
     order: [],
     settle: async () => {
       await clock.advance(1)
     },
   }
-  on('ui.status', () => ({ value: undefined }))
   on('session.cwd', () => ({ value: o.cwd ?? PROJECT }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
@@ -159,6 +161,10 @@ export function rig(on: On, o: RigOptions = {}): Rig {
     r.opens.push({ id: e.id, focus: e.focus, closeOnEscape: e.closeOnEscape })
     return { value: { isPlaced: true as const } }
   })
+  on('ui.toast', (_$, e) => {
+    r.toasts.push(e.text)
+    return { value: undefined }
+  })
   on('ui.close', (_$, e) => {
     r.closes.push(e.id)
     return { value: undefined }
@@ -170,12 +176,12 @@ export async function offerAll($: Engine, catalog: CatalogEntry[] = CATALOG) {
   for (const e of catalog) await $.agent.offer({ ...e, provider: OFFER_PROVIDER })
 }
 
-export const pane = (bodyColumns: number, requestId = 'flightdeck') => ({
-  plugin: 'flightdeck',
+export const pane = (bodyColumns: number, requestId = 'crew') => ({
+  plugin: 'crew',
   component: 'Pane' as const,
   requestId,
   props: {
-    title: 'Flightdeck',
+    title: 'Crew',
     isFocused: true,
     bodyColumns,
     placement: 'dock' as const,

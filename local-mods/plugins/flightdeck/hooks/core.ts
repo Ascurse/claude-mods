@@ -91,8 +91,8 @@ export const normalizeLog = (stored: unknown): LogLine[] =>
 
 // ---------------------------------------------------------------- config
 
-export type Panel = 'main' | 'architect' | 'gate' | 'agents' | 'loops' | 'receipt' | 'log' | 'crew'
-const PANELS: readonly Panel[] = ['main', 'architect', 'gate', 'agents', 'loops', 'receipt', 'log', 'crew']
+export type Panel = 'main' | 'architect' | 'gate' | 'agents' | 'loops' | 'receipt' | 'log'
+const PANELS: readonly Panel[] = ['main', 'architect', 'gate', 'agents', 'loops', 'receipt', 'log']
 
 export type Config = {
   architect: RegExp
@@ -107,7 +107,6 @@ export type Config = {
   palette: Palette
   openOnStart: boolean
   statusLine: boolean
-  crewRun: 'draft' | 'direct'
 }
 
 const safeRegExp = (source: string, fallback: string) => {
@@ -141,7 +140,6 @@ export const parseConfig = (o: Readonly<Record<string, unknown>>): Config => {
     palette: str('palette', 'theme') === 'pastel' ? 'pastel' : 'theme',
     openOnStart: bool('openOnStart', true),
     statusLine: bool('statusLine', true),
-    crewRun: str('crewRun', 'draft') === 'direct' ? 'direct' : 'draft',
   }
 }
 

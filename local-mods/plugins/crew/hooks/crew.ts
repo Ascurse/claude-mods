@@ -2,7 +2,7 @@
 // Nothing here touches `$`, so every rule is testable directly.
 import type { CatalogEntry, Crew, CrewMode, CrewRow, RowPhase, Tag, TagMap, TaskInfo } from '../types'
 import { fnv1a } from './cache/jev'
-import { shorten } from './core'
+import { shorten } from './util'
 
 export type { CatalogEntry, Crew, CrewMode, CrewRow, RowPhase, Tag, TagMap, TaskInfo }
 

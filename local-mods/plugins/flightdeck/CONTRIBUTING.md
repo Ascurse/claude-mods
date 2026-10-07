@@ -18,10 +18,9 @@ Edits to `hooks/` hot-reload in that session when Claude's turn ends.
 claude plugin validate .
 claude plugin test .
 npx -p typescript tsc -p .
-bun scripts/readme-draft.ts
 ```
 
-All four must pass. The last one checks that the `draftRequest` example in the README matches `hooks/crew.ts`; `bun scripts/readme-draft.ts --write` refreshes it. The type check needs `.claude-plugin/types/`, which Claude Code writes the first time it loads the mod.
+All three must pass. The type check needs `.claude-plugin/types/`, which Claude Code writes the first time it loads the mod.
 
 ## Ground rules
 

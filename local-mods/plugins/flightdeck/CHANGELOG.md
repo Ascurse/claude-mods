@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.0
+
+- CREW moved to the separate `crew` mod. Flightdeck no longer has the crew panel, the `crewRun` option, the `crew` entry in `panels`, the `/flightdeck reset` of crew state, or `scripts/readme-draft.ts`; they live in `crew` now.
+
 ## 0.6.1
 
 - `run` no longer spawns the agent itself. In auto mode the engine does not call a plugin's own hooks on its own `$.agent.spawn`, so the permission workaround from 0.6.0 never ran and the classifier still refused. `run` (and the queued agents of next mode) now sends the main model one request through `$.prompt.submit`: start these subagents with the Agent tool, in the background, with each task text verbatim. The model makes the Agent call, so the classifier sees a request. The row is `started` once the request is submitted; the agent card appears when the model starts it.

@@ -28,7 +28,12 @@
     {
       "name": "flightdeck",
       "source": "./plugins/flightdeck",
-      "description": "Session cockpit pane with a CREW panel: Jev picks agents for the turn, Haiku drafts the prompt, run spawns it (local copy of scasella/claude-flightdeck)"
+      "description": "Session cockpit pane: model vitals, architect, permission gate, subagent cards, turn receipt and log (local copy of scasella/claude-flightdeck)"
+    },
+    {
+      "name": "crew",
+      "source": "./plugins/crew",
+      "description": "Own pane with the 5 session agents that fit your request: Jev picks them, Haiku drafts the prompt, run spawns it (moved out of flightdeck)"
     }
   ]
 }
