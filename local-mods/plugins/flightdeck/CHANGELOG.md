@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0
+
+- The README shows a crew row with its short draft, the exact request `run` sends to Haiku, and an example of the full prompt that opens with those steps.
+- Tests cover how the short draft reaches that request: an empty or blank one adds nothing, nested steps arrive as one line in order, and a draft longer than 160 characters is cut to 160.
+
 ## 0.4.5
 
 - `run` now sends the short draft shown under the agent name to Haiku together with the one-line task, so the full prompt starts with the same first steps the row promised. Still one Haiku call per `run`; a row without a short draft sends nothing extra.
