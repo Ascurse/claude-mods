@@ -305,7 +305,7 @@ async function refreshCrew($: EngineInterface, query: string, mode: CrewMode = '
 
 type HandRefresh = 'started' | 'busy' | 'no-agents' | 'no-context'
 
-/** ↻ и /crew refresh: пятёрка заново под текущую переписку; в режиме next — под ту же догадку, с очередью. */
+/** ↻ и /crew refresh: пятёрка заново под текущую переписку; из режима next — тоже, очередь остаётся. */
 async function refreshByHand($: EngineInterface): Promise<HandRefresh> {
   if (catalog.size === 0) return 'no-agents'
   if (crewMemo.isHandRefreshing) return 'busy'
@@ -317,12 +317,11 @@ async function refreshByHand($: EngineInterface): Promise<HandRefresh> {
   try {
     const c = await getCrew($)
     if (c.isLoading) return 'busy'
-    const isNext = c.mode === 'next' && c.query !== ''
-    const query = isNext ? c.query : contextQuery(await $.session.messages().catch(() => []), crewMemo.lastQuery)
+    const query = contextQuery(await $.session.messages().catch(() => []), crewMemo.lastQuery)
     if (query === '') return 'no-context'
     crewMemo.lastQuery = query
     crewMemo.waitingQuery = ''
-    void refreshCrew($, query, isNext ? 'next' : 'now', { isManual: true })
+    void refreshCrew($, query, 'now', { isManual: true })
       .catch(err => notify($, `refresh failed: ${failure(err)}`))
       .finally(release)
     isStarted = true
@@ -362,7 +361,8 @@ async function toggleQueued($: EngineInterface, agent: string) {
   await update($, crew, c => {
     const n = normalizeCrew(c)
     const row = n.rows.find(r => r.agent === agent)
-    if (!row || n.mode !== 'next') return n
+    // после ↻ CREW в режиме now, но поставленного в очередь можно снять
+    if (!row || (n.mode !== 'next' && row.phase !== 'queued')) return n
     return setPhase(n, agent, row.phase === 'queued' ? 'idle' : 'queued')
   })
 }
@@ -480,13 +480,15 @@ export const register: Register = (on, options) => {
     // CREW режима next ждёт этот промпт, даже если он слово в слово совпал с догадкой
     const was = await getCrew($)
     const isNext = was.mode === 'next'
-    if (!back && query !== '' && !query.startsWith('<agent-message') && (query !== crewMemo.lastQuery || isNext)) {
+    const hasQueue = was.rows.some(r => r.phase === 'queued')
+    if (!back && query !== '' && !query.startsWith('<agent-message') && (query !== crewMemo.lastQuery || isNext || hasQueue)) {
       crewMemo.waitingQuery = catalog.size > 0 ? '' : query
       if (catalog.size > 0) {
         crewMemo.lastQuery = query
         void refreshCrew($, query).catch(() => undefined)
       }
-      const queued = isNext ? was.rows.filter(r => r.phase === 'queued') : []
+      // очередь собрана в режиме next и переживает ↻, который возвращает CREW к текущему диалогу
+      const queued = was.rows.filter(r => r.phase === 'queued')
       if (queued.length > 0) void startQueued($, query, queued).catch(() => undefined)
     }
     return next(e)
@@ -563,8 +565,8 @@ export const register: Register = (on, options) => {
       }
       const header = headerText()
       const actions = (row: CrewRow) => {
-        if (cr.mode === 'next') {
-          const isQueued = row.phase === 'queued'
+        const isQueued = row.phase === 'queued'
+        if (cr.mode === 'next' || isQueued) {
           return (
             <Box borderStyle="round">
               <Button key={`crew-next-${row.agent}`} variant={isQueued ? undefined : 'primary'} label={isQueued ? 'queued' : 'next'} onPress={() => toggleQueued($, row.agent)} />
