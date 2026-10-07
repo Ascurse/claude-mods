@@ -66,7 +66,7 @@ https://github.com/user-attachments/assets/9ad0fcc3-c81c-427a-a743-f7b6c49f5885
 | **loops** | model loops that match no card: workflow agents, compactions, memory forks | `turn.step` ids no card claims |
 | **receipt** | the running turn, or the last one: duration, agents, edits, errors, cost added | `turn.start`, `turn.complete` |
 | **log** | prompts, spawns, completions, consults, edits, errors and denials; filtered to one agent while you view its transcript | all of the above |
-| **crew** | the 5 agents that fit the current request, picked from every agent the session offers, narrowed by topic tags (`5 of 38 · jev · frontend, testing`) once the catalog is tagged. Beside each name Haiku's one-line task for that agent, or `нет задачи` when Haiku gave none; under the name, one dim line (at most 160 characters) with a short draft of how the agent would start, until `run` replaces it with the full prompt; when Haiku fails, the row just has no such line. `run` (a framed button) has Haiku write the agent's prompt, starting from that short draft; the draft stays under the row, in full, with `start` (spawn it in the background), `edit` (a focused pane with the draft; Enter saves it, Escape leaves it as it was) and `drop`. The header says `· jev` or `· by words` | `agent.offer`, `turn.start`, `jev pick-skill`, `$.model.complete`, `$.agent.spawn`, `$.store`, `$.ui.open` |
+| **crew** | the 5 agents that fit the current request, picked from every agent the session offers, narrowed by topic tags (`5 of 38 · jev · frontend, testing`) once the catalog is tagged. Beside each name Haiku's one-line task for that agent, or `нет задачи` when Haiku gave none; under the name, one dim line (at most 160 characters) with a short draft of how the agent would start, until `run` replaces it with the full prompt; when Haiku fails, the row just has no such line. `run` (a framed button) has Haiku write the agent's prompt, starting from that short draft; the draft stays under the row, in full, with `start` (spawn it in the background), `edit` (a focused pane with the draft; Enter saves it, Escape leaves it as it was) and `drop`. After a turn the panel switches to the next mode (see below). The header says `· jev` or `· by words` | `agent.offer`, `turn.start`, `jev pick-skill`, `$.model.complete`, `$.agent.spawn`, `$.store`, `$.ui.open`, `prompt.suggest`, `tool.check` |
 
 Connectors animate only while work flows: a turn is running, an agent is running, or a consult is open. Panels with nothing to show take no room, so a session without subagents shows just the main box and the log.
 
@@ -110,6 +110,15 @@ parser test flaky.
 
 A row whose task came without a short draft sends the same request without the `Its first steps` line; if the tasks call failed, the row has no task either, and the `Its one-line task` line is left out too.
 
+### Crew: now and next
+
+The crew panel works in two modes, and switches between them by itself.
+
+- **now**: you sent a prompt, the crew is picked for it, and `run` starts an agent beside the work already going. This is the panel as it always was.
+- **next**: the turn ended and Claude Code put its guess at your next prompt dim in the prompt box. The crew is picked for that guess, and a line under the header shows it: `next · <the guess>`. Each row has one button, `next`. It puts the agent in the queue and the row says `queued`; press it again to take the agent off.
+
+When you send your next prompt, Haiku writes each queued agent's task from that prompt (the guess only chose the agents), the agents start in the background and show up as agent cards, and the panel goes back to now for the new prompt. Sending the guess word for word works the same. A guess never replaces a draft you have open or a queue you already made. A queued agent that fails to start leaves a red line in the log. Without prompt suggestions (turned off in Claude Code's settings) there is no guess, so there is no next list.
+
 ## Use
 
 | Command | Does |
@@ -138,7 +147,7 @@ With `openOnStart`, the pane opens by itself when a session starts, in terminals
 
 ## What it can reach
 
-Flightdeck only watches, except for the crew panel's buttons. Every hook passes its event on unchanged: it never denies, rewrites or delays a tool call, a prompt or a subagent.
+Flightdeck only watches, except for the crew panel's buttons. Every hook passes its event on unchanged: it never denies, rewrites or delays a tool call, a prompt or a subagent. The one exception is the permission check of an agent the crew panel itself starts (see below).
 
 | It sees | Through |
 | --- | --- |
@@ -154,11 +163,13 @@ What it keeps: short summaries (a tool name plus a path or command, with credent
 The **crew** panel is the exception, and only it:
 
 - on each of your prompts it writes the agent catalog (names and descriptions) as `$TMPDIR/flightdeck-crew/<agent>/SKILL.md` and runs `jev pick-skill` on it, which sends your prompt to Jev; when `jev` is missing or fails, the panel falls back to word match;
+- after each turn, Claude Code's guess at your next prompt (`prompt.suggest`) goes through the same jev and Haiku steps, to pick the next crew;
 - every prompt also sends the query, the working directory and the 5 agents' descriptions to Haiku in one call, for the one-line tasks beside the names and the short drafts under them;
 - once per catalog, Haiku also gets the agent names and descriptions (about 50 per call) to tag them by topic; the tags narrow the list, and jev picks the tags of your prompt;
 - `run` calls Haiku with your prompt, the working directory, the agent's description and its one-line task;
 - `$.store` keeps, across sessions, the tag map, a cache of the last 50 jev answers and of the one-line tasks (a repeated prompt asks neither jev nor Haiku again), and the last 10 edits per agent;
-- `start` (or `run` with `crewRun: direct`) spawns that agent in the background. There is no stop button: once started, it runs to the end.
+- `start` (or `run` with `crewRun: direct`, or a queued agent when you send the next prompt) spawns that agent in the background. There is no stop button: once started, it runs to the end;
+- while that spawn runs, flightdeck's `tool.check` hook answers `allow` for exactly that Agent call: flightdeck as the caller, the same agent type, the same task text, once. Without it auto mode refuses the spawn, because the classifier does not see your button press. A settings rule for Agent, deny or ask, still decides, and every other Agent call is decided as before.
 
 Drop `crew` from `panels` to turn all of this off. `claude plugin validate .` prints exactly what it hooks and calls.
 
@@ -196,6 +207,8 @@ In `/config`, or under `pluginConfigs["flightdeck"].options` in `settings.json`:
 - Check `claude --version` is 2.1.287 or later, then run `/reload-plugins` and `/flightdeck`.
 - Below 144 columns, Claude Code won't seat a pane nobody asked for; `/flightdeck` opens it at any width.
 - Look in the transcript for a dim line starting `flightdeck:`. It names the hook that failed or the reason the pane was refused. Please [open an issue](https://github.com/scasella/claude-flightdeck/issues) with it.
+
+**No next list after a turn.** It needs Claude Code's prompt suggestions: the dim guess in the empty prompt box. When they are off, the crew panel stays in the now mode.
 
 **Colours look wrong.** Set `palette` to `pastel` in `/config`.
 

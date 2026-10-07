@@ -74,7 +74,7 @@ export type RigOptions = {
   task?: (req: { prompt: string }) => ModelAnswer | Promise<ModelAnswer>
   /** Ответ Haiku на разметку; по умолчанию не отвечает, и тегов нет. */
   tag?: (req: { prompt: string }) => ModelAnswer | Promise<ModelAnswer>
-  spawn?: () => { deny: string } | { agentId: string }
+  spawn?: () => { deny: string } | { agentId: string } | Promise<{ deny: string } | { agentId: string }>
   /** Что лежит в $.store к началу теста. */
   store?: Record<string, unknown>
   /** Папка проекта сессии; по умолчанию PROJECT. */
@@ -138,10 +138,10 @@ export function rig(on: On, o: RigOptions = {}): Rig {
     const a = await answer(e as never)
     return { value: { ...a, usage: {} } as never }
   })
-  on('agent.spawn', (_$, e) => {
+  on('agent.spawn', async (_$, e) => {
     // движок 2.1.292 отдаёт хуку вход Agent-инструмента: тип агента лежит в subagent_type
     r.spawns.push({ subagentType: e.subagentType ?? (e as { subagent_type?: string }).subagent_type, prompt: e.prompt, description: e.description })
-    const a = (o.spawn ?? (() => ({ agentId: `crew${r.spawns.length}` })))()
+    const a = await (o.spawn ?? (() => ({ agentId: `crew${r.spawns.length}` })))()
     return 'deny' in a ? a : { model: 'claude-sonnet-5-5', agentId: a.agentId }
   })
   on('store.get', (_$, e) => ({ value: r.store.get(e.key) }))

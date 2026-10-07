@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
 
+- Crew has two modes. **now**, as before: the crew is picked for the prompt you just sent, and `run` starts an agent beside the main work. **next**, new: when a turn ends and Claude Code guesses your next prompt (the dim suggestion in the prompt box), the crew is picked for that guess. Each row has a `next` button that queues the agent (`queued`; press again to take it off). When you send your next prompt, Haiku writes each queued agent's task from that real prompt, not from the guess, and the agent starts; the panel goes back to now. Taking the guess word for word starts the queue too. A guess never replaces a draft you have open or a queue you already made. With prompt suggestions turned off there is no next list.
+- `run` works in auto mode. The server-side classifier refused the spawn because the prompt never asked for an agent; it does not see the button press. While flightdeck's own spawn runs, its permission hook now answers `allow` for exactly that Agent call (flightdeck as the caller, the same agent type and the same task text, once). A settings rule for Agent, deny or ask, still decides, and every other Agent call goes to the classifier as before.
 - `bun scripts/readme-draft.ts` checks that the README's example of the `run` request matches `draftRequest` in `hooks/crew.ts` and fails if it doesn't; `--write` refreshes the example. The repo's pre-commit hook runs it when either file is staged. The plugin itself is unchanged.
 - The pre-commit hook checks the staged versions of the plugin's files, not the working tree, so a partly staged file is checked exactly as it will be committed.
 - The check's logic lives in `scripts/readme-draft-core.ts` and is covered by `tests/readme-draft.test.ts`; `tsc` now type-checks `scripts/` too.
