@@ -1,4 +1,4 @@
-import type { On } from 'claude-code'
+import type { On, SessionMessage } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { mock } from 'claude-code/testing'
 
@@ -83,6 +83,8 @@ export type RigOptions = {
   store?: Record<string, unknown>
   /** Папка проекта сессии; по умолчанию PROJECT. */
   cwd?: string
+  /** Переписка сессии для $.session.messages(); по умолчанию пустая. */
+  messages?: SessionMessage[]
 }
 
 export const PROJECT = '/work/project'
@@ -109,6 +111,7 @@ export function rig(on: On, o: RigOptions = {}): Rig {
     },
   }
   on('session.cwd', () => ({ value: o.cwd ?? PROJECT }))
+  on('session.messages', () => ({ value: o.messages ?? [] }))
   on('turn.start', (_$, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('agent.offer', () => ({ isOffered: true }))
