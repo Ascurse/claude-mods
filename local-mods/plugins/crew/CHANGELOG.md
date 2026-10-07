@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- `busyRows` and the pane header text live in `hooks/rows.ts`; no change in behaviour.
+
 ## 0.3.0
 
 - From the next mode, `↻` and `/crew refresh` turn the crew back to the current conversation instead of picking again for the same guess. The queue stays, and the queued agents still start with your next prompt.
