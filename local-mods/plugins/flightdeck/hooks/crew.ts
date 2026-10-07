@@ -97,12 +97,12 @@ export const rowsFor = (picks: readonly string[], catalog: readonly CatalogEntry
     return e ? [{ agent, description: e.description, phase: 'idle' as const, draft: null, error: null }] : []
   })
 
-export const draftRequest = (e: CatalogEntry, ctx: { query: string; cwd: string; task?: string | null }) => ({
+export const draftRequest = (e: CatalogEntry, ctx: { query: string; cwd: string; task?: string | null; plan?: string | null }) => ({
   model: 'haiku',
   maxTokens: 600,
   system:
     'You write the task prompt for a subagent. Reply with the prompt text only: concrete, self-contained, a few sentences, no preface and no code fences.',
-  prompt: `User request:\n${ctx.query}\n\nWorking directory: ${ctx.cwd}\n\nSubagent: ${e.agent}\nWhat it does: ${e.description}\n${ctx.task ? `\nIts one-line task for this request: ${ctx.task}\n` : ''}\nWrite the prompt to give this subagent.`,
+  prompt: `User request:\n${ctx.query}\n\nWorking directory: ${ctx.cwd}\n\nSubagent: ${e.agent}\nWhat it does: ${e.description}\n${ctx.task ? `\nIts one-line task for this request: ${ctx.task}\n` : ''}${ctx.plan ? `\nIts first steps, already shown to the user; begin the prompt with them, phrased as instructions to the subagent: ${ctx.plan}\n` : ''}\nWrite the prompt to give this subagent.`,
 })
 
 /** Ответ модели без рамки: обрезка пробелов, ограждение ``` и ведущая метка `Prompt:`. */

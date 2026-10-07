@@ -459,7 +459,7 @@ async function runRow($: EngineInterface, cfg: Config, agent: string) {
   await markRow($, agent, 'writing', { draft: null, error: null })
   try {
     const cwd = await $.session.cwd().catch(() => '')
-    const done = await $.model.complete(draftRequest({ agent, description: row.description, source: '' }, { query: c.query, cwd, task: row.task }))
+    const done = await $.model.complete(draftRequest({ agent, description: row.description, source: '' }, { query: c.query, cwd, task: row.task, plan: row.plan }))
     if (!done.isAnswered) return await markRow($, agent, 'error', { error: `error: ${done.reason}` })
     const draft = cleanDraft(done.text)
     if (draft === '') return await markRow($, agent, 'error', { error: 'error: empty draft' })
