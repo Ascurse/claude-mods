@@ -31,3 +31,14 @@ if command -v bd >/dev/null 2>&1; then
   if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
 fi
 # --- END BEADS INTEGRATION v1.2.2 ---
+
+# flightdeck: пример draftRequest в README должен совпадать с hooks/crew.ts (claude-3na).
+# Сверяется рабочее дерево, а не индекс: частично застейдженный файл проверка не различит.
+_fd=local-mods/plugins/flightdeck
+if git diff --cached --name-only | grep -qE "^$_fd/(hooks/crew\.ts|README\.md)$"; then
+  if ! command -v bun >/dev/null 2>&1; then
+    echo >&2 "flightdeck: для проверки README нужен bun (https://bun.sh)"
+    exit 1
+  fi
+  (cd "$_fd" && bun scripts/readme-draft.ts) || exit 1
+fi

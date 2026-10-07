@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `bun scripts/readme-draft.ts` checks that the README's example of the `run` request matches `draftRequest` in `hooks/crew.ts` and fails if it doesn't; `--write` refreshes the example. The repo's pre-commit hook runs it when either file is staged. The plugin itself is unchanged.
+
 ## 0.5.0
 
 - The README shows a crew row with its short draft, the exact request `run` sends to Haiku, and an example of the full prompt that opens with those steps.
