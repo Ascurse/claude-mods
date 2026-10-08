@@ -133,6 +133,8 @@ test('jevKey depends on the query and on the scope', () => {
   expect(jevKey('q', 'catalog1')).not.toBe(jevKey('q2', 'catalog1'))
   expect(jevKey('q', 'catalog1')).not.toBe(jevKey('q', 'catalog2'))
   expect(jevScope('h', 5)).not.toBe(jevScope('h', 20))
+  // до 0.3.2 jev отвечал тегами вместо агентов, и в кэш легли пустые выдачи: старая область не читается
+  expect(jevScope('h', 5)).not.toBe('h:5')
 })
 
 test('putJev then getJev returns the picks; an unknown key is undefined', async () => {
@@ -196,12 +198,17 @@ for (const surface of SURFACES) {
     await ready($, r)
     const agentRun = r.jevRuns().find(a => !isTagRun(a)) as string[]
     const tagRun = r.jevRuns().find(isTagRun) as string[]
-    const root = agentRun[agentRun.indexOf('--root') + 1] as string
-    expect(agentRun).toEqual(['jev', 'pick-skill', '--turn', QUERY, '--root', root, '--top-k', '20'])
-    expect(tagRun).toEqual(['jev', 'pick-skill', '--turn', QUERY, '--root', `${root}/tags`, '--top-k', '3'])
-    const tagWrites = r.writes.filter(w => w.path.startsWith(`${root}/tags/`))
+    const agentRoot = agentRun[agentRun.indexOf('--root') + 1] as string
+    const tagRoot = tagRun[tagRun.indexOf('--root') + 1] as string
+    expect(agentRun).toEqual(['jev', 'pick-skill', '--turn', QUERY, '--root', agentRoot, '--top-k', '20'])
+    expect(tagRun).toEqual(['jev', 'pick-skill', '--turn', QUERY, '--root', tagRoot, '--top-k', '3'])
+    // jev обходит --root вглубь: теги внутри каталога агентов вытесняют агентов из ответа
+    expect(tagRoot.startsWith(`${agentRoot}/`)).toBe(false)
+    expect(agentRoot.startsWith(`${tagRoot}/`)).toBe(false)
+    expect(r.writes.filter(w => w.path.startsWith(`${agentRoot}/`)).every(w => !w.path.startsWith(`${tagRoot}/`))).toBe(true)
+    const tagWrites = r.writes.filter(w => w.path.startsWith(`${tagRoot}/`))
     expect(tagWrites.length).toBe(TAGS.length)
-    for (const tag of TAGS) expect(tagWrites.find(w => w.path === `${root}/tags/${tag}/SKILL.md`)?.text).toBe(tagFile(tag))
+    for (const tag of TAGS) expect(tagWrites.find(w => w.path === `${tagRoot}/${tag}/SKILL.md`)?.text).toBe(tagFile(tag))
     expect(r.order.lastIndexOf('write') < r.order.indexOf('jev')).toBe(true)
   })
 
