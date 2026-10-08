@@ -16,8 +16,8 @@ export const fnv1a = (text: string): string => {
   return (h >>> 0).toString(16).padStart(8, '0')
 }
 
-/** Область ответа: хеш каталога и размер выдачи (или метка тегов). */
-export const jevScope = (catalogHash: string, topK: number): string => `${catalogHash}:${topK}`
+/** Область ответа: хеш каталога и размер выдачи (или метка тегов). v2 — выдачи до разделения каталогов агентов и тегов не читаются. */
+export const jevScope = (catalogHash: string, topK: number): string => `v2:${catalogHash}:${topK}`
 
 export const jevKey = (query: string, scope: string): string => fnv1a(`${scope}\n${query}`)
 

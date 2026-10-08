@@ -111,9 +111,11 @@ const crewMemo = {
   isHandRefreshing: false,
 }
 
-async function catalogRoot($: EngineInterface) {
+/** Каталог агентов и псевдонавыки тегов — соседние папки: jev обходит --root вглубь, и теги внутри каталога агентов вытесняли бы агентов из ответа. */
+async function crewRoots($: EngineInterface) {
   const tmp = await $.env.get('TMPDIR').catch(() => undefined)
-  return `${(tmp || '/tmp').replace(/\/$/, '')}/crew`
+  const base = `${(tmp || '/tmp').replace(/\/$/, '')}/crew`
+  return { agents: `${base}/agents`, tags: `${base}/tags` }
 }
 
 async function writeCatalog($: EngineInterface, root: string, entries: CatalogEntry[]) {
@@ -125,7 +127,7 @@ async function writeCatalog($: EngineInterface, root: string, entries: CatalogEn
 
 async function writeTags($: EngineInterface, root: string) {
   if (crewMemo.writtenTags) return
-  await Promise.all(TAGS.map(t => $.fs.write(`${root}/tags/${t}/SKILL.md`, tagFile(t))))
+  await Promise.all(TAGS.map(t => $.fs.write(`${root}/${t}/SKILL.md`, tagFile(t))))
   crewMemo.writtenTags = true
 }
 
@@ -148,9 +150,9 @@ async function cachedJev($: EngineInterface, scope: string, query: string, shoul
 async function askJev($: EngineInterface, query: string, entries: CatalogEntry[], topK: number, shouldSkipCache: boolean) {
   return cachedJev($, jevScope(catalogHash(entries), topK), query, shouldSkipCache, async () => {
     try {
-      const root = await catalogRoot($)
-      await writeCatalog($, root, entries)
-      const done = await $.process.run(['jev', 'pick-skill', '--turn', query, '--root', root, '--top-k', String(topK)])
+      const { agents } = await crewRoots($)
+      await writeCatalog($, agents, entries)
+      const done = await $.process.run(['jev', 'pick-skill', '--turn', query, '--root', agents, '--top-k', String(topK)])
       return done.exitCode === 0 ? parseJevPicks(done.stdout, entries) : null
     } catch {
       return null
@@ -158,15 +160,15 @@ async function askJev($: EngineInterface, query: string, entries: CatalogEntry[]
   })
 }
 
-/** Теги запроса: jev выбирает среди псевдонавыков <root>/tags/<tag>/SKILL.md; без ответа тегов нет. */
+/** Теги запроса: jev выбирает среди псевдонавыков <tags>/<tag>/SKILL.md; без ответа тегов нет. */
 async function askTags($: EngineInterface, query: string, entries: CatalogEntry[], shouldSkipCache: boolean): Promise<Tag[]> {
   const tagStubs: CatalogEntry[] = TAGS.map(t => ({ agent: t, description: '', source: '' }))
   const picks = await cachedJev($, jevScope('tags', TAG_TOP_K), query, shouldSkipCache, async () => {
     try {
-      const root = await catalogRoot($)
-      await writeCatalog($, root, entries)
-      await writeTags($, root)
-      const done = await $.process.run(['jev', 'pick-skill', '--turn', query, '--root', `${root}/tags`, '--top-k', String(TAG_TOP_K)])
+      const { agents, tags } = await crewRoots($)
+      await writeCatalog($, agents, entries)
+      await writeTags($, tags)
+      const done = await $.process.run(['jev', 'pick-skill', '--turn', query, '--root', tags, '--top-k', String(TAG_TOP_K)])
       return done.exitCode === 0 ? parseJevPicks(done.stdout, tagStubs) : null
     } catch {
       return null

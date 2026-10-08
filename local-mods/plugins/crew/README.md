@@ -74,7 +74,7 @@ When you send your next prompt, Haiku writes each queued agent's task from that 
 
 Crew never denies, rewrites or delays a tool call, a prompt or a subagent. It reads the agent catalog (`agent.offer`), your prompts (`turn.start`), Claude Code's guess at your next prompt (`prompt.suggest`) and, on `↻` or `/crew refresh` only, the conversation (`$.session.messages()`) for your last prompt and the end of the last reply. It makes no network requests of its own; the model calls below go through `jev` and `$.model.complete`.
 
-- on each of your prompts it writes the agent catalog (names and descriptions) as `$TMPDIR/crew/<agent>/SKILL.md` and runs `jev pick-skill` on it, which sends your prompt to Jev; when `jev` is missing or fails, the pane falls back to word match;
+- on each of your prompts it writes the agent catalog (names and descriptions) as `$TMPDIR/crew/agents/<agent>/SKILL.md` (topic tags go to `$TMPDIR/crew/tags`, beside it, so Jev never picks a tag for an agent) and runs `jev pick-skill` on it, which sends your prompt to Jev; when `jev` is missing or fails, the pane falls back to word match;
 - after each turn, Claude Code's guess at your next prompt goes through the same jev and Haiku steps, to pick the next crew;
 - `↻` and `/crew refresh` send your last prompt and the last 400 characters of Claude's reply through the same jev and Haiku steps, without reading the cache;
 - every prompt also sends the query, the working directory and the 5 agents' descriptions to Haiku in one call, for the one-line tasks beside the names and the short drafts under them;

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2
+
+- Jev picks agents again: the topic tags no longer sit inside the agent catalog, where Jev took a tag for the answer and the pane fell back to `by words`. Jev answers cached before this version are not read, so queries seen before pick by Jev too.
+
 ## 0.3.1
 
 - `busyRows` and the pane header text live in `hooks/rows.ts`; no change in behaviour.
