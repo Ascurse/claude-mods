@@ -1,10 +1,10 @@
 // Pure data of the CREW panel: which agents suit the prompt, and the text sent to the model.
 // Nothing here touches `$`, so every rule is testable directly.
-import type { CatalogEntry, Crew, CrewMode, CrewRow, RowPhase, Tag, TagMap, TaskInfo } from '../types'
+import type { CatalogEntry, Crew, CrewRow, RowPhase, Tag, TagMap, TaskInfo } from '../types'
 import { fnv1a } from './cache/jev'
 import { shorten } from './util'
 
-export type { CatalogEntry, Crew, CrewMode, CrewRow, RowPhase, Tag, TagMap, TaskInfo }
+export type { CatalogEntry, Crew, CrewRow, RowPhase, Tag, TagMap, TaskInfo }
 
 export const CREW_SIZE = 5
 
@@ -98,27 +98,115 @@ export const rowsFor = (picks: readonly string[], catalog: readonly CatalogEntry
     return e ? [{ agent, description: e.description, phase: 'idle' as const, draft: null, error: null }] : []
   })
 
-/** Сколько знаков конца последнего ответа модели идёт в запрос ручного обновления. */
+/** Сколько знаков конца последнего ответа модели идёт в запрос следующего шага. */
 export const CONTEXT_TAIL = 400
 
-type TranscriptMessage = { role: 'user' | 'assistant'; text: string }
+type ToolUse = { tool: string; input: Record<string, unknown> }
+type TranscriptMessage = { role: 'user' | 'assistant'; text: string; toolUses?: readonly ToolUse[] }
 
 /** Отчёт фонового агента и служебные строки команд — не запрос человека. */
 const isPrompt = (m: TranscriptMessage) => m.role === 'user' && m.text.trim() !== '' && !/^\s*<(agent-message|command-|local-command-)/.test(m.text)
 
-/**
- * Запрос ручного обновления: последний промпт человека и хвост последнего ответа после него.
- * Без промпта в переписке — fallback.
- */
-export const contextQuery = (messages: readonly TranscriptMessage[], fallback: string): string => {
+/** Последний настоящий промпт человека и последний непустой ответ Claude после него. */
+export const lastExchange = (messages: readonly TranscriptMessage[]): { prompt: string; reply: string } => {
   const at = messages.findLastIndex(isPrompt)
-  if (at < 0) return fallback
-  const prompt = messages[at]!.text.trim()
+  if (at < 0) return { prompt: '', reply: '' }
   const reply = messages.slice(at + 1).findLast(m => m.role === 'assistant' && m.text.trim() !== '')
-  if (!reply) return prompt
-  const flat = reply.text.replace(/\s+/g, ' ').trim()
-  const tail = flat.length > CONTEXT_TAIL ? `…${flat.slice(-CONTEXT_TAIL).trimStart()}` : flat
-  return `${prompt}\n\nLatest reply: ${tail}`
+  return { prompt: messages[at]!.text.trim(), reply: reply?.text.trim() ?? '' }
+}
+
+// ---------------------------------------------------------------- следующий шаг
+
+/** Сколько задач из `bd ready` идёт в предсказание. */
+export const READY_MAX = 3
+/** Предел строки следующего шага: она же запрос jev и шапка CREW. */
+export const STEP_MAX = 160
+
+const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+
+const usesOf = (messages: readonly TranscriptMessage[]) => messages.flatMap(m => m.toolUses ?? [])
+
+/** Файлы, которые Claude правил или писал после последнего промпта человека, по одному разу. */
+export const editedFiles = (messages: readonly TranscriptMessage[]): string[] => {
+  const files = usesOf(messages.slice(messages.findLastIndex(isPrompt) + 1))
+    .filter(u => EDIT_TOOLS.has(u.tool))
+    .map(u => u.input.file_path ?? u.input.notebook_path)
+    .filter((f): f is string => typeof f === 'string' && f !== '')
+  return [...new Set(files)]
+}
+
+/** Агенты, которых сессия уже запускала инструментом Agent: CREW их не предлагает. */
+export const spawnedIn = (messages: readonly TranscriptMessage[]): Set<string> =>
+  new Set(
+    usesOf(messages)
+      .filter(u => u.tool === 'Agent' || u.tool === 'Task')
+      .map(u => u.input.subagent_type)
+      .filter((a): a is string => typeof a === 'string' && a !== ''),
+  )
+
+export const excludeSpawned = (picks: readonly string[], spawned: ReadonlySet<string>): string[] => picks.filter(a => !spawned.has(a))
+
+/** Задачи `bd ready --json` строками `id: title`, не больше READY_MAX; нечитаемый вывод — пусто. */
+export const parseReady = (stdout: string): string[] => {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(stdout)
+  } catch {
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+  return parsed
+    .filter((t): t is { id: string; title: string } => typeof t?.id === 'string' && typeof t?.title === 'string')
+    .slice(0, READY_MAX)
+    .map(t => `${t.id}: ${t.title}`)
+}
+
+export type NextInput = {
+  prompt: string
+  reply: string
+  files: readonly string[]
+  gitStatus: string
+  diffStat: string
+  ready: readonly string[]
+  suggestion: string | null
+}
+
+const tailOf = (text: string): string => {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > CONTEXT_TAIL ? `…${flat.slice(-CONTEXT_TAIL).trimStart()}` : flat
+}
+
+/** Что известно о сессии к концу хода; разделы без данных не пишутся. */
+export const buildNextContext = (i: NextInput): string => {
+  const reply = tailOf(i.reply)
+  const sections: [string, string][] = [
+    ['User request', i.prompt.trim()],
+    ["Claude's latest reply", reply],
+    ['Files edited this turn', i.files.join('\n')],
+    ['git status --short', i.gitStatus.trimEnd()],
+    ['git diff --stat', i.diffStat.trimEnd()],
+    ['Ready tasks (bd ready)', i.ready.slice(0, READY_MAX).join('\n')],
+    ["Claude Code's suggested next prompt", i.suggestion?.trim() ?? ''],
+  ]
+  return sections
+    .filter(([, body]) => body.trim() !== '')
+    .map(([title, body]) => `${title}:\n${body}`)
+    .join('\n\n')
+}
+
+export const nextStepRequest = (context: string) => ({
+  model: 'haiku',
+  maxTokens: 200,
+  system:
+    'You predict the next step of a coding session from what was just done. Reply with one line only: the single most likely next step, as a short task for a specialist subagent. Do not suggest work that is already done in this session; look ahead to what should follow it.',
+  prompt: `${context}\n\nWhat is the next step?`,
+})
+
+/** Строка шага из ответа Haiku: первая непустая, без метки `Next step:`; пусто — null. */
+export const parseNextStep = (text: string): string | null => {
+  const line = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
+  const step = line.replace(/^(next step|step)\s*:\s*/i, '').replace(/^["'`]|["'`]$/g, '').trim().slice(0, STEP_MAX).trim()
+  return step === '' ? null : step
 }
 
 export const draftRequest = (e: CatalogEntry, ctx: { query: string; cwd: string; task?: string | null; plan?: string | null }) => ({
@@ -211,9 +299,6 @@ export const parseTagAnswer = (text: string, catalog: readonly CatalogEntry[]): 
 /** Агенты хотя бы с одним тегом запроса; без тегов запроса фильтра нет, без тегов у агента он при фильтре выпадает. */
 export const filterByTags = (catalog: readonly CatalogEntry[], tagMap: TagMap, queryTags: readonly Tag[]): CatalogEntry[] =>
   queryTags.length === 0 ? [...catalog] : catalog.filter(e => (tagMap[e.agent] ?? []).some(t => queryTags.includes(t)))
-
-export const tagHeader = (shown: number, total: number, by: 'jev' | 'words' | null, tags: readonly Tag[]): string =>
-  [`${shown} of ${total}`, by === 'jev' ? 'jev' : 'by words', ...(tags.length > 0 ? [tags.join(', ')] : [])].join(' · ')
 
 export const EDIT_HISTORY_LIMIT = 10
 

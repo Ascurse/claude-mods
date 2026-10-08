@@ -2,14 +2,14 @@
 
 A Claude Code mod that suggests which of the session's agents fit your request, has Haiku draft the task prompt, and starts the agent in the background. It was the CREW panel of [flightdeck](../flightdeck/README.md) and now has its own pane.
 
-The pane opens with the first suggestion for a prompt (option `autoOpen`), not at session start, and shows the 5 agents that fit the current request, picked from every agent the session offers, narrowed by topic tags (`5 of 38 · jev · frontend, testing`) once the catalog is tagged. Beside each name is Haiku's one-line task for that agent, or `нет задачи` when Haiku gave none; under the name, one dim line (at most 160 characters) with a short draft of how the agent would start, until `run` replaces it with the full prompt. `run` (a framed button) has Haiku write the agent's prompt; the draft stays under the row with `start` (ask the main model to start it in the background), `edit` (a focused pane; Enter saves, Escape leaves it as it was) and `drop`. The header says `· jev` or `· by words`, and ends with `↻`: it picks the crew again for where the conversation is now (your last prompt plus the end of Claude's last reply), skipping the cache. Rows you are working with (a draft, `writing`, `started`, `queued`) stay on top; the new picks fill the free places, 5 rows at most. From the next mode `↻` goes back to the current conversation and keeps the queue: the queued agents still start with your next prompt. While Crew loads, `↻` is dim. An empty pane draws nothing, unless you opened it with `/crew`: then it shows the header with `↻`.
+The pane looks one step ahead. When Claude finishes answering in the main session (not a subagent, not an aborted turn), Haiku predicts the next step from your last prompt, the end of Claude's reply, the files edited since that prompt, `git status --short`, `git diff --stat`, the first 3 tasks of `bd ready` and Claude Code's grey guess at your next prompt, and Crew shows the 5 agents that fit that step, picked from every agent the session offers and narrowed by topic tags once the catalog is tagged. Agents already started in the session are left out, and Haiku is told not to suggest work that is already done. When Haiku gives no step, the crew is picked for your last prompt, so a list is always there. The pane opens with the first prediction (option `autoOpen`), not at session start. The header reads `CREW · next: <step>` with `↻` on the right. Beside each name, in the accent colour, is Haiku's one-line task for that agent, dim, or `нет задачи`; under the row, one dim line (at most 160 characters) with a short draft of how the agent would start. `▸ run` on the right has Haiku write the agent's prompt; the draft then stays under the row with `▸ start` (ask the main model to start it in the background), `✎ edit` (a focused pane; Enter saves, Escape leaves it as it was) and `✕ drop`. The main action is the bright one, the others are dim. While Haiku writes, the row says `writing`; once started, `started`. `↻` predicts again for where the conversation is now, skipping the cache. Rows with a draft or `writing` stay on top through any refresh, `started` ones only through `↻`; the new picks fill the free places, 5 rows at most. While Crew loads, the header reads `CREW · next: …`, `↻` is dim and does nothing, and the rows are placeholders. An empty pane draws nothing, unless you opened it with `/crew`: then it shows the header with `↻`.
 
 ## Use
 
 | Command | Does |
 | --- | --- |
 | `/crew` | open the pane |
-| `/crew refresh` | same as `↻`: pick the crew again for the current conversation |
+| `/crew refresh` | same as `↻`: predict the next step again and pick the crew for it |
 | `/crew close` | close it |
 | `/crew reset` | clear the picked crew and drafts |
 
@@ -61,27 +61,19 @@ parser test flaky.
 
 A row whose task came without a short draft sends the same request without the `Its first steps` line; if the tasks call failed, the row has no task either, and the `Its one-line task` line is left out too.
 
-### Crew: now and next
-
-The pane works in two modes, and switches between them by itself.
-
-- **now**: you sent a prompt, the crew is picked for it, and `run` starts an agent beside the work already going. 
-- **next**: the turn ended and Claude Code put its guess at your next prompt dim in the prompt box. The crew is picked for that guess, and a line under the header shows it: `next · <the guess>`. Each row has one button, `next`. It puts the agent in the queue and the row says `queued`; press it again to take the agent off.
-
-When you send your next prompt, Haiku writes each queued agent's task from that prompt (the guess only chose the agents), the agents start in the background and show up as agent cards, and the panel goes back to now for the new prompt. Sending the guess word for word works the same. A guess never replaces a draft you have open or a queue you already made. A queued agent that fails to start shows a toast. Without prompt suggestions (turned off in Claude Code's settings) there is no guess, so there is no next list.
-
 ## What it can reach
 
-Crew never denies, rewrites or delays a tool call, a prompt or a subagent. It reads the agent catalog (`agent.offer`), your prompts (`turn.start`), Claude Code's guess at your next prompt (`prompt.suggest`) and, on `↻` or `/crew refresh` only, the conversation (`$.session.messages()`) for your last prompt and the end of the last reply. It makes no network requests of its own; the model calls below go through `jev` and `$.model.complete`.
+Crew never denies, rewrites or delays a tool call, a prompt or a subagent. It reads the agent catalog (`agent.offer`), your prompts (`turn.start`), the end of each main-session turn (`turn.complete`), Claude Code's guess at your next prompt (`prompt.suggest`) and the conversation (`$.session.messages()`) for your last prompt, the end of the last reply, the files edited since that prompt and the agents already started. It runs `git status --short`, `git diff --stat` and `bd ready --json --brief --limit 3` in the working directory; a command that is missing or fails is left out. It makes no network requests of its own; the model calls below go through `jev` and `$.model.complete`.
 
-- on each of your prompts it writes the agent catalog (names and descriptions) as `$TMPDIR/crew/agents/<agent>/SKILL.md` (topic tags go to `$TMPDIR/crew/tags`, beside it, so Jev never picks a tag for an agent) and runs `jev pick-skill` on it, which sends your prompt to Jev; when `jev` is missing or fails, the pane falls back to word match;
-- after each turn, Claude Code's guess at your next prompt goes through the same jev and Haiku steps, to pick the next crew;
-- `↻` and `/crew refresh` send your last prompt and the last 400 characters of Claude's reply through the same jev and Haiku steps, without reading the cache;
-- every prompt also sends the query, the working directory and the 5 agents' descriptions to Haiku in one call, for the one-line tasks beside the names and the short drafts under them;
-- once per catalog, Haiku also gets the agent names and descriptions (about 50 per call) to tag them by topic; the tags narrow the list, and jev picks the tags of your prompt;
-- `run` calls Haiku with your prompt, the working directory, the agent's description and its one-line task;
+- after each answer it sends that context (the reply cut to its last 400 characters) to Haiku for the next step;
+- for that step it writes the agent catalog (names and descriptions) as `$TMPDIR/crew/agents/<agent>/SKILL.md` (topic tags go to `$TMPDIR/crew/tags`, beside it, so Jev never picks a tag for an agent) and runs `jev pick-skill` on it, which sends the step to Jev; when `jev` is missing or fails, the pane falls back to word match;
+- when Claude Code's guess at your next prompt arrives after the answer, the step is predicted once more with it, unless a draft, an edit or a `writing` row is open;
+- `↻` and `/crew refresh` predict the step again and pick for it without reading the cache;
+- every step also sends the step, the working directory and the 5 agents' descriptions to Haiku in one call, for the one-line tasks beside the names and the short drafts under them;
+- once per catalog, Haiku also gets the agent names and descriptions (about 50 per call) to tag them by topic; the tags narrow the list, and jev picks the tags of the step;
+- `run` calls Haiku with the step, the working directory, the agent's description and its one-line task;
 - `$.store` keeps, across sessions, the tag map, a cache of the last 50 jev answers and of the one-line tasks, and the last 10 edits per agent;
-- `start` (or `run` with `crewRun: direct`, or a queued agent when you send the next prompt) asks the main model to start that agent in the background through one request sent with `$.prompt.submit`, the task text verbatim. The row reads `started` when the request is submitted. There is no stop button: once the model starts the agent, it runs to the end;
+- `start` (or `run` with `crewRun: direct`) asks the main model to start that agent in the background through one request sent with `$.prompt.submit`, the task text verbatim. The row reads `started` when the request is submitted. There is no stop button: once the model starts the agent, it runs to the end;
 - crew does not call Agent itself: in auto mode the engine skips a plugin's own hooks on `$.agent.spawn`, and the classifier refuses a spawn that no request asked for. The request to the main model is what the classifier sees.
 
 Turn it all off by disabling the mod. `claude plugin validate .` prints exactly what it hooks and calls.

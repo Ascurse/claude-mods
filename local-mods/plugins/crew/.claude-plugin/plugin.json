@@ -1,7 +1,7 @@
 {
   "name": "crew",
-  "version": "0.3.2",
-  "description": "Crew: suggests the 5 session agents that fit your request, drafts a task prompt with Haiku and starts the agent in the background, from its own pane",
+  "version": "0.4.0",
+  "description": "Crew: predicts the next step after each answer and suggests the 5 session agents that fit it, drafts a task prompt with Haiku and starts the agent in the background, from its own pane",
   "author": {
     "name": "Stephen Casella",
     "url": "https://github.com/scasella"

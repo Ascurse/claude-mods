@@ -4,8 +4,16 @@ import {
   CREW_SIZE,
   DEFAULT_CREW,
   cleanDraft,
+  CONTEXT_TAIL,
+  buildNextContext,
   draftRequest,
+  editedFiles,
+  excludeSpawned,
   mergePicks,
+  nextStepRequest,
+  parseNextStep,
+  parseReady,
+  spawnedIn,
   parseJevPicks,
   rowsFor,
   setPhase,
@@ -33,6 +41,7 @@ import {
   pane,
   ready,
   rig,
+  turn,
 } from './crew-rig'
 import type { JevAnswer } from './crew-rig'
 
@@ -185,7 +194,7 @@ for (const surface of SURFACES) {
     expect(await ui.find({ text: /CREW/ })).toBeUndefined()
     await ui.unmount()
     // a prompt but no catalog
-    await $.turn.start({ text: QUERY, turnId: 'T-nocat' })
+    await turn($, QUERY, 'T-nocat')
     await r.settle()
     ui = await $.ui.mount({ ...pane(86), surface })
     expect(await ui.find({ text: /CREW/ })).toBeUndefined()
@@ -209,16 +218,18 @@ for (const surface of SURFACES) {
   test(`${surface}: a catalog but no prompt yet draws no CREW panel, and an empty prompt asks nothing`, async ($, on) => {
     const r = rig(on)
     await offerAll($)
-    await $.turn.start({ text: '', turnId: 'T-empty' })
+    await turn($, '', 'T-empty')
     await r.settle()
     const ui = await $.ui.mount({ ...pane(86), surface })
     expect(await ui.find({ text: /CREW/ })).toBeUndefined()
     await ui.unmount()
     expect(r.jevRuns().length).toBe(0)
     expect(r.writes.length).toBe(0)
+    expect(r.nextCompletes.length).toBe(0)
+    expect(r.opens.length).toBe(0)
   })
 
-  test(`${surface}: loading shows the header with "… of N", then five rows when jev answers`, async ($, on) => {
+  test(`${surface}: loading shows "next: …" with bare placeholders, then the step and five rows when jev answers`, async ($, on) => {
     const gate = deferred<JevAnswer>()
     const jevStarted = deferred()
     const r = rig(on, {
@@ -228,29 +239,30 @@ for (const surface of SURFACES) {
       },
     })
     await offerAll($)
-    const started = $.turn.start({ text: QUERY, turnId: 'T-load' }) // may or may not wait for jev
+    const started = turn($, QUERY, 'T-load') // may or may not wait for jev
     await jevStarted.promise
     const ui = await $.ui.mount({ ...pane(86), surface })
     expect(await ui.find({ text: /CREW/ })).toBeDefined()
-    expect(await ui.find({ text: /… of 8/ })).toBeDefined()
+    expect(await ui.find({ text: ' · next: …' })).toBeDefined()
     expect(await ui.find({ key: 'crew-run-typescript-reviewer' })).toBeUndefined() // loading rows carry no buttons
-    // заглушка той же высоты, что и ряд с рамкой вокруг run: список не прыгает
+    expect(await ui.find({ key: 'crew-refresh' })).toBeUndefined() // ↻ is not pressable while loading
     const wait = await ui.find({ key: 'crew-wait-0' })
-    expect(JSON.stringify(wait?.children)).toContain('"borderStyle":"round"')
+    expect(JSON.stringify(wait?.children)).toContain('░░░')
+    expect(JSON.stringify(wait?.children)).not.toContain('borderStyle')
     gate.resolve({ exitCode: 0, stdout: jevStdout(JEV_FIVE) })
     await started
     await r.settle()
-    expect(await ui.find({ text: /… of/ })).toBeUndefined()
-    expect(await ui.find({ text: /5 of 8 · jev/ })).toBeDefined()
+    expect(await ui.find({ text: ' · next: …' })).toBeUndefined()
+    expect(await ui.find({ text: ` · next: ${QUERY}` })).toBeDefined()
+    expect(await ui.find({ text: /of 8/ })).toBeUndefined() // no counters in the header
     await ui.unmount()
   })
 
-  test(`${surface}: jev picks five agents; header says jev, rows are jev's, each has a run button`, async ($, on) => {
+  test(`${surface}: jev picks five agents; rows are jev's, each has a run button`, async ($, on) => {
     const r = rig(on)
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
     expect(await ui.find({ text: /CREW/ })).toBeDefined()
-    expect(await ui.find({ text: /5 of 8 · jev/ })).toBeDefined()
     expect((await drawnRows(ui)).sort()).toEqual([...JEV_FIVE].sort())
     for (const agent of JEV_FIVE) expect(await ui.find({ key: `crew-run-${agent}` })).toBeDefined()
     expect(await ui.find({ key: 'crew-run-docs-writer' })).toBeUndefined() // not picked
@@ -277,13 +289,10 @@ for (const surface of SURFACES) {
   test(`${surface}: the same query asks jev once; a new query asks again`, async ($, on) => {
     const r = rig(on)
     await ready($, r)
-    await $.turn.start({ text: QUERY, turnId: 'T-again' })
+    await turn($, QUERY, 'T-again')
     await r.settle()
     expect(r.jevRuns().length).toBe(1)
-    const ui = await $.ui.mount({ ...pane(86), surface })
-    expect(await ui.find({ text: /5 of 8 · jev/ })).toBeDefined()
-    await ui.unmount()
-    await $.turn.start({ text: OTHER_QUERY, turnId: 'T-other' })
+    await turn($, OTHER_QUERY, 'T-other')
     await r.settle()
     expect(r.jevRuns().length).toBe(2)
     expect(r.jevRuns()[1]).toContain(OTHER_QUERY)
@@ -301,7 +310,6 @@ for (const surface of SURFACES) {
       await ready($, r)
       expect(r.jevRuns().length).toBe(1)
       const ui = await $.ui.mount({ ...pane(86), surface })
-      expect(await ui.find({ text: /5 of 8 · by words/ })).toBeDefined()
       expect((await drawnRows(ui)).length).toBe(5)
       await ui.unmount()
     })
@@ -311,7 +319,6 @@ for (const surface of SURFACES) {
     const r = rig(on, { jev: () => ({ exitCode: 0, stdout: jevStdout(['docs-writer']) }) })
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
-    expect(await ui.find({ text: /5 of 8 · jev/ })).toBeDefined()
     const rows = await drawnRows(ui)
     expect(rows.length).toBe(5)
     expect(rows).toContain('docs-writer') // jev's pick stays, though no word of the query matches it
@@ -323,10 +330,9 @@ for (const surface of SURFACES) {
     const small = CATALOG.slice(0, 3)
     const r = rig(on, { jev: () => ({ exitCode: 0, stdout: jevStdout(['Code Reviewer']) }) })
     await offerAll($, small)
-    await $.turn.start({ text: QUERY, turnId: 'T-small' })
+    await turn($, QUERY, 'T-small')
     await r.settle()
     const ui = await $.ui.mount({ ...pane(86), surface })
-    expect(await ui.find({ text: /3 of 3 · jev/ })).toBeDefined()
     expect((await drawnRows(ui)).length).toBe(3)
     await ui.unmount()
   })
@@ -522,21 +528,26 @@ for (const surface of SURFACES) {
     await ui.unmount()
   })
 
-  test(`${surface}: run is a primary Button, not plain, inside a round-bordered Box`, async ($, on) => {
+  test(`${surface}: run is a plain "▸ run" without a frame; in a draft start is bright, edit and drop are dim`, async ($, on) => {
     const r = rig(on)
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
     const run = await ui.find({ key: `crew-run-${FIRST}` })
     expect(run?.type).toBe('Button')
-    expect(run?.props.variant).toBe('primary')
-    expect(run?.props.plain).toBeUndefined()
-    // ближайшая рамка вокруг кнопки: круглая, без своего цвета (цвет темы)
-    const frames = (await ui.findAll({ type: 'Box' })).filter(
-      b => b.props.borderStyle === 'round' && b.props.borderColor === undefined && JSON.stringify(b.children).includes(`crew-run-${FIRST}`),
-    )
-    expect(frames.length > 0).toBe(true)
+    expect(run?.props.label).toBe('▸ run')
+    expect(run?.props.plain).toBe(true)
+    expect(run?.props.variant).toBeUndefined()
+    const frames = (await ui.findAll({ type: 'Box' })).filter(b => b.props.borderStyle === 'round' && JSON.stringify(b.children).includes(`crew-run-${FIRST}`))
+    expect(frames.length).toBe(1) // only the panel's own border
     await ui.press({ key: `crew-run-${FIRST}` })
-    for (const k of ['start', 'edit', 'drop']) expect((await ui.find({ key: `crew-${k}-${FIRST}` }))?.props.plain).toBe(true)
+    const labels = { start: '▸ start', edit: '✎ edit', drop: '✕ drop' }
+    for (const [k, label] of Object.entries(labels)) {
+      const b = await ui.find({ key: `crew-${k}-${FIRST}` })
+      expect(b?.props.plain).toBe(true)
+      expect(b?.props.label).toBe(label)
+      expect(b?.props.dimColor).toBe(k === 'start' ? undefined : true)
+    }
+    expect(await ui.find({ key: `crew-run-${FIRST}` })).toBeUndefined() // a draft row has no run on its right
     await ui.unmount()
   })
 
@@ -645,14 +656,14 @@ test('session start opens no pane', async ($, on) => {
 test('the first prompt with a catalog opens the pane', async ($, on) => {
   const r = rig(on, { jev: () => ({ exitCode: 0, stdout: jevStdout(JEV_FIVE) }) })
   await offerAll($)
-  await $.turn.start({ text: QUERY, turnId: 'T-open' })
+  await turn($, QUERY, 'T-open')
   await r.settle()
   expect(r.opens.map(o => o.id)).toEqual(['crew'])
 })
 
 test('a prompt without a catalog opens no pane', async ($, on) => {
   const r = rig(on)
-  await $.turn.start({ text: QUERY, turnId: 'T-nocat-open' })
+  await turn($, QUERY, 'T-nocat-open')
   await r.settle()
   expect(r.opens.length).toBe(0)
 })
@@ -660,9 +671,118 @@ test('a prompt without a catalog opens no pane', async ($, on) => {
 test('autoOpen false keeps the pane closed when suggestions arrive', { options: { autoOpen: false } }, async ($, on) => {
   const r = rig(on, { jev: () => ({ exitCode: 0, stdout: jevStdout(JEV_FIVE) }) })
   await offerAll($)
-  await $.turn.start({ text: QUERY, turnId: 'T-noauto' })
+  await turn($, QUERY, 'T-noauto')
   await r.settle()
   expect(r.opens.length).toBe(0)
+})
+
+// ---------------------------------------------------------------- engine: next step
+
+const STEP = 'run the parser tests and fix what fails'
+const answer = (text: string) => () => ({ isAnswered: true as const, text })
+
+test('CREW is built for the step Haiku predicts, not for the prompt, and the header names that step', async ($, on) => {
+  const r = rig(on, { next: answer(`Next step: ${STEP}`) })
+  await ready($, r)
+  expect(r.nextCompletes.length).toBe(1)
+  expect(r.nextCompletes[0]?.prompt).toContain(QUERY)
+  expect(r.jevRuns().map(a => a[3])).toEqual([STEP])
+  const ui = await $.ui.mount({ ...pane(86), surface: 'terminal' })
+  expect(await ui.find({ text: ` · next: ${STEP}` })).toBeDefined()
+  await ui.unmount()
+})
+
+test('nothing is predicted on turn.start: the list waits for the answer', async ($, on) => {
+  const r = rig(on, { next: answer(STEP) })
+  await offerAll($)
+  await $.turn.start({ text: QUERY, turnId: 'T-only-start' })
+  await r.settle()
+  expect(r.nextCompletes.length).toBe(0)
+  expect(r.jevRuns().length).toBe(0)
+})
+
+test('a subagent finishing its turn, or an aborted turn, predicts nothing', async ($, on) => {
+  const r = rig(on, { next: answer(STEP) })
+  await offerAll($)
+  await $.turn.start({ text: QUERY, turnId: 'T-sub' })
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 'T-sub', reason: 'answer', agentId: 'a-1' } as never)
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: true, turnId: 'T-sub', reason: 'aborted' })
+  await r.settle()
+  expect(r.nextCompletes.length).toBe(0)
+})
+
+test('the prediction is told the git state and the first ready tasks, read without a shell', async ($, on) => {
+  const cmd = (argv: string[]) => {
+    if (argv[0] === 'git' && argv[1] === 'status') return { exitCode: 0, stdout: ' M src/parser.ts\n' }
+    if (argv[0] === 'git' && argv[1] === 'diff') return { exitCode: 0, stdout: ' src/parser.ts | 12 ++++++------\n' }
+    if (argv[0] === 'bd') return { exitCode: 0, stdout: JSON.stringify([{ id: 'claude-1', title: 'Write parser docs' }]) }
+    return { exitCode: 1, stdout: '' }
+  }
+  const r = rig(on, { next: answer(STEP), cmd })
+  await ready($, r)
+  const asked = r.nextCompletes[0]?.prompt ?? ''
+  expect(asked).toContain('M src/parser.ts')
+  expect(asked).toContain('src/parser.ts | 12')
+  expect(asked).toContain('claude-1: Write parser docs')
+  expect(r.runs.find(a => a[0] === 'bd')).toEqual(['bd', 'ready', '--json', '--brief', '--limit', '3'])
+})
+
+test('a failing git or bd leaves its section out and the prediction still runs', async ($, on) => {
+  const r = rig(on, { next: answer(STEP), cmd: () => ({ exitCode: 128, stdout: 'fatal: not a git repository' }) })
+  await ready($, r)
+  expect(r.nextCompletes[0]?.prompt).not.toContain('fatal')
+  expect(r.jevRuns().map(a => a[3])).toEqual([STEP])
+})
+
+test('agents already started in this session are not offered again', async ($, on) => {
+  const spawned = { role: 'assistant' as const, text: '', toolUses: [{ tool: 'Agent', input: { subagent_type: 'typescript-reviewer', prompt: 'x' }, result: '', text: '', isError: false }] }
+  const r = rig(on, { messages: [{ role: 'user', text: QUERY, toolUses: [] }, spawned] as never })
+  await ready($, r)
+  const ui = await $.ui.mount({ ...pane(86), surface: 'terminal' })
+  const rows = await drawnRows(ui)
+  expect(rows).not.toContain('typescript-reviewer')
+  expect(rows.length).toBe(5)
+  await ui.unmount()
+})
+
+test("Claude Code's suggestion after the answer re-predicts once, with the suggestion in the context", async ($, on) => {
+  on('prompt.suggest', () => ({ isShown: true }))
+  const r = rig(on, { next: answer(STEP) })
+  await ready($, r)
+  await $.prompt.suggest({ text: 'commit the parser fix', origin: { kind: 'suggestion' } } as never)
+  await r.settle()
+  expect(r.nextCompletes.length).toBe(2)
+  expect(r.nextCompletes[1]?.prompt).toContain('commit the parser fix')
+  await $.prompt.suggest({ text: 'push it', origin: { kind: 'suggestion' } } as never)
+  await r.settle()
+  expect(r.nextCompletes.length).toBe(2)
+})
+
+test('a suggestion that comes before the answer is used by the one prediction after it', async ($, on) => {
+  on('prompt.suggest', () => ({ isShown: true }))
+  const r = rig(on, { next: answer(STEP) })
+  await offerAll($)
+  await $.turn.start({ text: QUERY, turnId: 'T-early' })
+  await $.prompt.suggest({ text: 'commit the parser fix', origin: { kind: 'suggestion' } } as never)
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 'T-early', reason: 'answer' })
+  await r.settle()
+  expect(r.nextCompletes.length).toBe(1)
+  expect(r.nextCompletes[0]?.prompt).toContain('commit the parser fix')
+})
+
+test('an open draft survives the next automatic prediction; a started row does not', async ($, on) => {
+  const r = rig(on)
+  await ready($, r)
+  const ui = await $.ui.mount({ ...pane(86), surface: 'terminal' })
+  await ui.press({ key: `crew-run-${FIRST}` })
+  await turn($, OTHER_QUERY, 'T-after-draft')
+  await r.settle()
+  expect(await ui.find({ key: `crew-start-${FIRST}` })).toBeDefined()
+  await ui.press({ key: `crew-start-${FIRST}` })
+  await turn($, 'and the lexer too', 'T-after-start')
+  await r.settle()
+  expect(await ui.find({ text: /started/ })).toBeUndefined()
+  await ui.unmount()
 })
 
 // ---------------------------------------------------------------- spawnRequest
@@ -700,4 +820,103 @@ test('spawnRequest fences a prompt that holds backticks with a longer fence, so 
   const prompt = 'Use:\n```ts\nconst a = 1\n```\nthen stop'
   const text = spawnRequest([{ agent: 'x', prompt }], 'q')
   expect(text).toContain(`\n\`\`\`\`\n${prompt}\n\`\`\`\``)
+})
+
+// ---------------------------------------------------------------- предсказание следующего шага
+
+const NEXT_INPUT = {
+  prompt: 'fix the flaky parser test',
+  reply: 'Fixed the race in parser.ts and the test passes now.',
+  files: ['src/parser.ts', 'tests/parser.test.ts'],
+  gitStatus: ' M src/parser.ts\n M tests/parser.test.ts',
+  diffStat: ' src/parser.ts | 12 ++++++------\n 1 file changed',
+  ready: ['claude-a1: Add parser docs', 'claude-b2: Benchmark parser', 'claude-c3: Release 1.2', 'claude-d4: Fourth task'],
+  suggestion: 'run the full test suite',
+}
+
+test('buildNextContext carries the prompt, the reply, the edited files, git state, ready tasks and the suggestion', () => {
+  const ctx = buildNextContext(NEXT_INPUT)
+  expect(ctx).toContain('fix the flaky parser test')
+  expect(ctx).toContain('Fixed the race in parser.ts')
+  expect(ctx).toContain('src/parser.ts')
+  expect(ctx).toContain('tests/parser.test.ts')
+  expect(ctx).toContain(' M src/parser.ts')
+  expect(ctx).toContain('1 file changed')
+  expect(ctx).toContain('claude-a1: Add parser docs')
+  expect(ctx).toContain('run the full test suite')
+})
+
+test('buildNextContext keeps only the first 3 ready tasks', () => {
+  const ctx = buildNextContext(NEXT_INPUT)
+  expect(ctx).toContain('claude-c3: Release 1.2')
+  expect(ctx).not.toContain('claude-d4')
+})
+
+test('buildNextContext keeps only the tail of a long reply', () => {
+  const reply = `${'head '.repeat(200)}TAIL_MARK`
+  const ctx = buildNextContext({ ...NEXT_INPUT, reply })
+  expect(ctx).toContain('TAIL_MARK')
+  expect(ctx).not.toContain('head '.repeat(CONTEXT_TAIL / 5 + 1))
+})
+
+test('buildNextContext leaves out the sections it has nothing for', () => {
+  const ctx = buildNextContext({ prompt: 'explain the parser', reply: '', files: [], gitStatus: '', diffStat: '', ready: [], suggestion: null })
+  expect(ctx).toContain('explain the parser')
+  expect(ctx).not.toMatch(/git status/i)
+  expect(ctx).not.toMatch(/diff/i)
+  expect(ctx).not.toMatch(/ready/i)
+  expect(ctx).not.toMatch(/suggest/i)
+  expect(ctx).not.toMatch(/files/i)
+})
+
+test('nextStepRequest asks Haiku for the next step and forbids suggesting work already done', () => {
+  const ctx = buildNextContext(NEXT_INPUT)
+  const req = nextStepRequest(ctx)
+  expect(req.model).toBe('haiku')
+  expect(req.prompt).toContain(ctx)
+  expect(`${req.system}\n${req.prompt}`).toMatch(/do not suggest[^.]*already done/i)
+})
+
+test('excludeSpawned drops agents this session already started and keeps the order of the rest', () => {
+  const picks = ['code-reviewer', 'tdd-guide', 'doc-updater', 'security-reviewer']
+  expect(excludeSpawned(picks, new Set(['tdd-guide', 'security-reviewer']))).toEqual(['code-reviewer', 'doc-updater'])
+})
+
+test('excludeSpawned leaves the picks as they are when the session started no agents', () => {
+  const picks = ['code-reviewer', 'tdd-guide']
+  expect(excludeSpawned(picks, new Set())).toEqual(picks)
+})
+
+const use = (tool: string, input: Record<string, unknown>) => ({ tool_use_id: `${tool}-${JSON.stringify(input).length}`, tool, input })
+const said = (role: 'user' | 'assistant', text: string, toolUses: ReturnType<typeof use>[] = []) => ({ role, text, toolUses })
+
+test('editedFiles lists the files Claude edited or wrote after the last prompt, each once', () => {
+  const messages = [
+    said('user', 'first prompt'),
+    said('assistant', '', [use('Edit', { file_path: '/old.ts' })]),
+    said('user', 'fix the parser'),
+    said('assistant', '', [use('Read', { file_path: '/read.ts' }), use('Edit', { file_path: '/src/parser.ts' })]),
+    said('assistant', '', [use('Write', { file_path: '/tests/parser.test.ts' }), use('Edit', { file_path: '/src/parser.ts' })]),
+  ]
+  expect(editedFiles(messages)).toEqual(['/src/parser.ts', '/tests/parser.test.ts'])
+})
+
+test('spawnedIn names every subagent type the session started with the Agent tool', () => {
+  const messages = [
+    said('assistant', '', [use('Agent', { subagent_type: 'code-reviewer', prompt: 'x' })]),
+    said('user', 'next'),
+    said('assistant', '', [use('Agent', { subagent_type: 'tdd-guide', prompt: 'y' }), use('Bash', { command: 'ls' })]),
+  ]
+  expect([...spawnedIn(messages)].sort()).toEqual(['code-reviewer', 'tdd-guide'])
+})
+
+test('parseNextStep keeps one clean line and drops a leading label', () => {
+  expect(parseNextStep('Next step: review the parser diff\nand more')).toBe('review the parser diff')
+  expect(parseNextStep('   ')).toBeNull()
+})
+
+test('parseReady turns bd ready --json into "id: title" lines, at most 3; unreadable output gives none', () => {
+  const out = JSON.stringify([1, 2, 3, 4].map(n => ({ id: `claude-${n}`, title: `Task ${n}`, status: 'open' })))
+  expect(parseReady(out)).toEqual(['claude-1: Task 1', 'claude-2: Task 2', 'claude-3: Task 3'])
+  expect(parseReady('Error: no beads database found')).toEqual([])
 })
