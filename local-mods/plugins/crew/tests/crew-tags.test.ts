@@ -9,12 +9,11 @@ import {
   skillFile,
   tagBatches,
   tagFile,
-  tagHeader,
   tagRequest,
 } from '../hooks/crew'
 import type { CatalogEntry } from '../hooks/crew'
 import { JEV_LIMIT, fnv1a, getJev, jevKey, jevScope, putJev } from '../hooks/cache/jev'
-import { CATALOG, JEV_FIVE, QUERY, SURFACES, deferred, drawnRows, entry, jevStdout, offerAll, pane, ready, rig } from './crew-rig'
+import { CATALOG, JEV_FIVE, QUERY, SURFACES, deferred, drawnRows, entry, jevStdout, offerAll, pane, ready, rig, turn } from './crew-rig'
 import type { JevAnswer } from './crew-rig'
 
 // ---------------------------------------------------------------- fixtures
@@ -101,13 +100,6 @@ test('filterByTags keeps agents carrying at least one query tag; untagged ones g
   expect(filterByTags(CATALOG, tagged, [])).toEqual(CATALOG) // no filter: everyone
 })
 
-test('tagHeader: count of the filtered set, how it was ranked, the applied tags', () => {
-  expect(tagHeader(5, 38, 'jev', ['frontend', 'testing'])).toBe('5 of 38 · jev · frontend, testing')
-  expect(tagHeader(5, 8, 'jev', [])).toBe('5 of 8 · jev')
-  expect(tagHeader(3, 8, 'words', ['docs'])).toBe('3 of 8 · by words · docs')
-  expect(tagHeader(3, 8, 'words', [])).toBe('3 of 8 · by words')
-})
-
 test('catalogHash ignores order and changes with any name or description', () => {
   expect(catalogHash([...CATALOG].reverse())).toBe(HASH)
   expect(catalogHash(CATALOG.slice(1))).not.toBe(HASH)
@@ -177,11 +169,10 @@ test('a damaged cache in the store reads as empty and is rewritten', async () =>
 // ---------------------------------------------------------------- engine: the filter
 
 for (const surface of SURFACES) {
-  test(`${surface}: query tags filter the crew; header shows the tags and the filtered count`, async ($, on) => {
+  test(`${surface}: query tags filter the crew`, async ($, on) => {
     const r = rig(on, { store: seeded, jev: jevWith(['frontend', 'testing'], ['docs-writer', 'pkg:db-tuner', 'typescript-reviewer']) })
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
-    expect(await ui.find({ text: '5 of 6 · jev · frontend, testing' })).toBeDefined()
     const rows = await drawnRows(ui)
     expect(rows.length).toBe(5)
     for (const name of rows) expect(CARRYING).toContain(name)
@@ -216,7 +207,6 @@ for (const surface of SURFACES) {
     const r = rig(on, { store: seeded, jev: jevWith([]) })
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
-    expect(await ui.find({ text: '5 of 8 · jev' })).toBeDefined()
     expect((await drawnRows(ui)).sort()).toEqual([...JEV_FIVE].sort())
     expect(r.jevRuns().find(a => !isTagRun(a))?.at(-1)).toBe('5')
     await ui.unmount()
@@ -229,8 +219,7 @@ for (const surface of SURFACES) {
     })
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
-    expect(await ui.find({ text: '5 of 8 · jev' })).toBeDefined()
-    expect(await ui.find({ text: /· jev · / })).toBeUndefined()
+    expect((await drawnRows(ui)).sort()).toEqual([...JEV_FIVE].sort())
     await ui.unmount()
   })
 
@@ -238,15 +227,15 @@ for (const surface of SURFACES) {
     const r = rig(on, { store: seeded, jev: jevWith(['legal']) })
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
-    expect(await ui.find({ text: '5 of 8 · jev' })).toBeDefined()
+    expect((await drawnRows(ui)).sort()).toEqual([...JEV_FIVE].sort())
     await ui.unmount()
   })
 
-  test(`${surface}: without tags for this catalog the panel is as before: top-k 5, no tag run, no tags in the header`, async ($, on) => {
+  test(`${surface}: without tags for this catalog the panel is as before: top-k 5, no tag run`, async ($, on) => {
     const r = rig(on, { jev: jevWith(['testing']) })
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
-    expect(await ui.find({ text: '5 of 8 · jev' })).toBeDefined()
+    expect((await drawnRows(ui)).sort()).toEqual([...JEV_FIVE].sort())
     expect(r.jevRuns().length).toBe(1)
     expect(r.jevRuns()[0]?.at(-1)).toBe('5')
     await ui.unmount()
@@ -260,14 +249,14 @@ test('tagging runs in the background: the first prompt is unfiltered, the filter
   const r = rig(on, { tag: () => gate.promise, jev: jevWith(['frontend', 'testing']) })
   await ready($, r)
   const ui = await $.ui.mount({ ...pane(86), surface: 'terminal' })
-  expect(await ui.find({ text: '5 of 8 · jev' })).toBeDefined() // not tagged yet: as today
+  expect((await drawnRows(ui)).sort()).toEqual([...JEV_FIVE].sort()) // not tagged yet: unfiltered
   expect(r.tagCompletes.length).toBe(1)
   expect(r.tagCompletes[0]?.model).toBe('haiku')
   for (const e of CATALOG) expect(r.tagCompletes[0]?.prompt).toContain(e.agent)
   gate.resolve({ isAnswered: true, text: JSON.stringify(TAG_MAP) })
   await r.settle()
   expect(r.store.get(TAGS_KEY)).toEqual(TAG_MAP)
-  expect(await ui.find({ text: '5 of 6 · jev · frontend, testing' })).toBeDefined()
+  for (const name of await drawnRows(ui)) expect(CARRYING).toContain(name)
   await ui.unmount()
 })
 
@@ -275,7 +264,7 @@ test('a catalog is tagged in batches of 50 agents', async ($, on) => {
   const many = Array.from({ length: 120 }, (_, i) => entry(`agent-${String(i).padStart(3, '0')}`, `does job ${i}`))
   const r = rig(on, { tag: () => ({ isAnswered: true, text: '{}' }) })
   await offerAll($, many)
-  await $.turn.start({ text: QUERY, turnId: 'T-many' })
+  await turn($, QUERY, 'T-many')
   await r.settle()
   expect(r.tagCompletes.length).toBe(3)
   expect(r.tagCompletes[0]?.prompt).toContain('agent-049')
@@ -286,12 +275,12 @@ test('a catalog is tagged in batches of 50 agents', async ($, on) => {
 test('an unparsable Haiku answer is ignored: nothing stored, no filter, and it is not asked again this session', async ($, on) => {
   const r = rig(on, { tag: () => ({ isAnswered: true, text: 'sorry, I cannot do that' }), jev: jevWith(['testing']) })
   await ready($, r)
-  await $.turn.start({ text: 'another request entirely', turnId: 'T-2' })
+  await turn($, 'another request entirely', 'T-2')
   await r.settle()
   expect(r.store.get(TAGS_KEY)).toBeUndefined()
   expect(r.tagCompletes.length).toBe(1)
   const ui = await $.ui.mount({ ...pane(86), surface: 'terminal' })
-  expect(await ui.find({ text: /5 of 8 · jev$/ })).toBeDefined()
+  expect((await drawnRows(ui)).sort()).toEqual([...JEV_FIVE].sort())
   await ui.unmount()
 })
 
@@ -299,7 +288,7 @@ test('a rejected tagging call is swallowed', async ($, on) => {
   const r = rig(on, { tag: () => ({ isAnswered: false, reason: 'empty-reply' }) })
   await ready($, r)
   const ui = await $.ui.mount({ ...pane(86), surface: 'terminal' })
-  expect(await ui.find({ text: '5 of 8 · jev' })).toBeDefined()
+  expect((await drawnRows(ui)).sort()).toEqual([...JEV_FIVE].sort())
   await ui.unmount()
 })
 
@@ -320,9 +309,7 @@ test('a fresh session with only $.store behind it asks jev nothing for a query i
   const r = rig(on, { store: Object.fromEntries(prior.data), jev: () => 'reject' })
   await ready($, r)
   expect(r.jevRuns().length).toBe(0)
-  expect(r.runs.length).toBe(0)
   const ui = await $.ui.mount({ ...pane(86), surface: 'terminal' })
-  expect(await ui.find({ text: /5 of 8 · jev/ })).toBeDefined()
   const rows = await drawnRows(ui)
   expect(rows).toContain('docs-writer')
   expect(rows).toContain('repo-explorer')
@@ -336,13 +323,13 @@ test('both jev calls are cached: after /clear the same query costs no jev run, t
   expect(r.jevRuns().length).toBe(2)
   expect((r.store.get('crew.jevCache') as unknown[]).length).toBe(2)
   await $.session.end({ reason: 'clear', sessionId: 's' } as never)
-  await $.turn.start({ text: QUERY, turnId: 'T-again' })
+  await turn($, QUERY, 'T-again')
   await r.settle()
   expect(r.jevRuns().length).toBe(2)
   const ui = await $.ui.mount({ ...pane(86), surface: 'terminal' })
-  expect(await ui.find({ text: '5 of 6 · jev · frontend, testing' })).toBeDefined()
+  for (const name of await drawnRows(ui)) expect(CARRYING).toContain(name)
   await ui.unmount()
-  await $.turn.start({ text: 'a different request', turnId: 'T-new' })
+  await turn($, 'a different request', 'T-new')
   await r.settle()
   expect(r.jevRuns().length).toBe(4) // a new query goes to jev again
 })
@@ -355,7 +342,7 @@ test('a failed jev answer is not cached', async ($, on) => {
   expect(r.store.get('crew.jevCache')).toBeUndefined()
   fail = false
   await $.session.end({ reason: 'clear', sessionId: 's' } as never)
-  await $.turn.start({ text: QUERY, turnId: 'T-retry' })
+  await turn($, QUERY, 'T-retry')
   await r.settle()
   expect(r.jevRuns().length).toBe(2)
 })
@@ -364,7 +351,7 @@ test('the cache holds 50 entries across many different queries', async ($, on) =
   const r = rig(on)
   await offerAll($)
   for (let i = 0; i < 55; i++) {
-    await $.turn.start({ text: `question number ${i}`, turnId: `T-${i}` })
+    await turn($, `question number ${i}`, `T-${i}`)
     await r.settle()
   }
   expect((r.store.get('crew.jevCache') as unknown[]).length).toBe(50)

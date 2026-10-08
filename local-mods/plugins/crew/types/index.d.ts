@@ -1,10 +1,6 @@
 export type CatalogEntry = { agent: string; description: string; source: string }
 
-/** queued: отмечен в режиме next, стартует со следующим промптом. */
-export type RowPhase = 'idle' | 'writing' | 'draft' | 'started' | 'error' | 'queued'
-
-/** now: под идущий промпт, агент стартует сразу; next: под догадку движка о следующем промпте. */
-export type CrewMode = 'now' | 'next'
+export type RowPhase = 'idle' | 'writing' | 'draft' | 'started' | 'error'
 
 export type CrewRow = {
   agent: string
@@ -38,6 +34,7 @@ export type EditHistory = Record<string, string[]>
  * editing: агент, чей черновик открыт в окне правки.
  */
 export type Crew = {
+  /** Предсказанный следующий шаг: по нему подобраны агенты и он же в шапке. */
   query: string
   isLoading: boolean
   by: 'jev' | 'words' | null
@@ -47,8 +44,6 @@ export type Crew = {
   editing?: string | null
   /** Идёт фоновый запрос строк-задач: у строк без задачи рисуется `…`. */
   isTasking?: boolean
-  /** Нет поля — now. */
-  mode?: CrewMode
 }
 
 declare module 'claude-code' {

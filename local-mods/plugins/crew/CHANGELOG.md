@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- Crew looks one step ahead instead of repeating the prompt already running: after each answer in the main session Haiku predicts the next step from the conversation, the edited files, `git status`, `git diff --stat`, `bd ready` and Claude Code's grey guess, and the crew is picked for that step. Agents already started in the session are left out. Without a step from Haiku the crew is picked for the last prompt.
+- The header reads `CREW · next: <step>`; the counters and tags are gone from it.
+- New row design: the name in the accent colour, the task dim, `▸ run` on the right; a draft shows `▸ start   ✎ edit   ✕ drop`; `writing` and `started` take the button's place; while loading, placeholder rows and a dim `↻`.
+- `↻` returns at once and predicts in the background.
+- The next mode is gone: no `next` button, no queue, no agents started with the next prompt.
+
 ## 0.3.2
 
 - Jev picks agents again: the topic tags no longer sit inside the agent catalog, where Jev took a tag for the answer and the pane fell back to `by words`. Jev answers cached before this version are not read, so queries seen before pick by Jev too.

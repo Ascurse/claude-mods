@@ -2,12 +2,12 @@ import { expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
 import { JEV_CACHE_KEY } from '../hooks/cache/jev'
-import { CONTEXT_TAIL, contextQuery } from '../hooks/crew'
+import { lastExchange } from '../hooks/crew'
 import type { JevAnswer, Rig } from './crew-rig'
-import { JEV_FIVE, QUERY, SURFACES, deferred, drawnRows, jevStdout, offerAll, pane, ready, rig } from './crew-rig'
+import { JEV_FIVE, QUERY, SURFACES, deferred, drawnRows, jevStdout, offerAll, pane, ready, rig, turn } from './crew-rig'
 
 const FIRST = 'typescript-reviewer'
-const GUESS = 'now add tests for the parser'
+const STEP = 'add tests for the tokenizer fix'
 const REPLY = 'Found two bugs in parser.ts: an off-by-one in the tokenizer and a missing null check.'
 const OTHER_FIVE = ['pkg:db-tuner', 'repo-explorer', 'docs-writer', 'Code Reviewer', 'test-planner']
 
@@ -33,36 +33,23 @@ const jevThenGate = (gate: { promise: Promise<JevAnswer> }) => {
 /** /crew с аргументами, как его набрал человек; origin и presentation движку теста не нужны. */
 const runCrew = ($: Engine, args: string) => $.command.run({ command: 'crew', args } as never)
 
-// ---------------------------------------------------------------- contextQuery
+// ---------------------------------------------------------------- lastExchange
 
-test('contextQuery is the last real prompt plus the tail of the reply after it', () => {
-  const q = contextQuery([user('old prompt'), assistant('old reply'), ...TRANSCRIPT], '')
-  expect(q.startsWith(QUERY)).toBe(true)
-  expect(q).toContain(REPLY)
-  expect(q).not.toContain('old')
+test('lastExchange is the last real prompt and the last reply after it', () => {
+  const x = lastExchange([user('old prompt'), assistant('old reply'), ...TRANSCRIPT])
+  expect(x).toEqual({ prompt: QUERY, reply: REPLY })
 })
 
-test('contextQuery skips handbacks and tool-result-only messages', () => {
+test('lastExchange skips handbacks and tool-result-only messages', () => {
   const handback = user('<agent-message from="tester">\nThe report follows:\nall green')
   const toolResult = { role: 'user' as const, text: '', toolUses: [], toolResults: [] }
-  const q = contextQuery([...TRANSCRIPT, toolResult, handback, assistant('Tests pass now.')], '')
-  expect(q.startsWith(QUERY)).toBe(true)
-  expect(q).toContain('Tests pass now.')
-  expect(q).not.toContain('agent-message')
+  const x = lastExchange([...TRANSCRIPT, toolResult, handback, assistant('Tests pass now.')])
+  expect(x).toEqual({ prompt: QUERY, reply: 'Tests pass now.' })
 })
 
-test('contextQuery keeps only the flattened tail of a long reply', () => {
-  const long = `${'first part '.repeat(80)}\nthe conclusion`
-  const q = contextQuery([user(QUERY), assistant(long)], '')
-  const tail = q.slice(q.indexOf('…'))
-  expect(tail.length).toBeLessThanOrEqual(CONTEXT_TAIL + 1)
-  expect(q.endsWith('the conclusion')).toBe(true)
-  expect(q.split('\n').length).toBe(3)
-})
-
-test('contextQuery without a prompt falls back, and with nothing is empty', () => {
-  expect(contextQuery([], 'the last query')).toBe('the last query')
-  expect(contextQuery([assistant('hello')], '')).toBe('')
+test('lastExchange without a prompt is empty', () => {
+  expect(lastExchange([])).toEqual({ prompt: '', reply: '' })
+  expect(lastExchange([assistant('hello')])).toEqual({ prompt: '', reply: '' })
 })
 
 // ---------------------------------------------------------------- кнопка ↻
@@ -84,15 +71,16 @@ for (const surface of SURFACES) {
     await ui.unmount()
   })
 
-  test(`${surface}: ↻ asks jev with the prompt and the tail of the reply`, async ($, on) => {
-    const r = rig(on, { messages: TRANSCRIPT, jev: jevInTurn(JEV_FIVE, OTHER_FIVE) })
+  test(`${surface}: ↻ predicts again from the prompt and the reply, and asks jev for the predicted step`, async ($, on) => {
+    const r = rig(on, { messages: TRANSCRIPT, jev: jevInTurn(JEV_FIVE, OTHER_FIVE), next: () => ({ isAnswered: true, text: STEP }) })
     await ready($, r)
     const ui = await $.ui.mount({ ...pane(86), surface })
     await ui.press({ key: 'crew-refresh' })
     await r.settle()
-    const turn = crewTurns(r).at(-1) ?? ''
-    expect(turn.startsWith(QUERY)).toBe(true)
-    expect(turn).toContain(REPLY)
+    const asked = r.nextCompletes.at(-1)?.prompt ?? ''
+    expect(asked).toContain(QUERY)
+    expect(asked).toContain(REPLY)
+    expect(crewTurns(r).at(-1)).toBe(STEP)
     expect((await drawnRows(ui)).sort()).toEqual([...OTHER_FIVE].sort())
     await ui.unmount()
   })
@@ -194,7 +182,7 @@ for (const surface of SURFACES) {
 
 // ---------------------------------------------------------------- /crew refresh
 
-test('/crew refresh rebuilds CREW from the transcript, skipping the cache', async ($, on) => {
+test('/crew refresh predicts from the transcript again, skipping the cache', async ($, on) => {
   const r = rig(on, { messages: TRANSCRIPT })
   await ready($, r)
   const before = crewTurns(r).length
@@ -202,7 +190,8 @@ test('/crew refresh rebuilds CREW from the transcript, skipping the cache', asyn
   await r.settle()
   expect(done.text).toMatch(/refresh/i)
   expect(crewTurns(r).length).toBe(before + 1)
-  expect(crewTurns(r).at(-1)).toContain(REPLY)
+  expect(r.nextCompletes.length).toBe(2)
+  expect(r.nextCompletes.at(-1)?.prompt).toContain(REPLY)
 })
 
 test('/crew refresh writes the fresh picks back to the jev cache', async ($, on) => {
@@ -232,62 +221,53 @@ test('/crew refresh with no agents yet says so and asks nothing', async ($, on) 
   expect(r.jevRuns().length).toBe(0)
 })
 
-// ---------------------------------------------------------------- режим «следующий»
+// ---------------------------------------------------------------- гонки предсказаний
 
-async function readyNext($: Engine, r: Rig, on: Parameters<typeof rig>[0]) {
+test('a prediction with nothing to go on does not leave the pane loading over one already running', async ($, on) => {
+  const messages = [...TRANSCRIPT]
+  const gate = deferred<{ isAnswered: true; text: string }>()
+  const r = rig(on, { messages, next: () => gate.promise })
+  await offerAll($)
+  await runCrew($, 'refresh')
+  await r.settle()
+  messages.length = 0
+  await $.turn.complete({ answer: '', durationMs: 10, isAborted: false, turnId: 'T-bare', reason: 'answer' })
+  await r.settle()
+  gate.resolve({ isAnswered: true, text: STEP })
+  await r.settle()
+  const ui = await $.ui.mount({ ...pane(86), surface: 'terminal' })
+  expect(await ui.find({ text: ' · next: …' })).toBeUndefined()
+  expect(await ui.find({ text: ` · next: ${STEP}` })).toBeDefined()
+  expect((await drawnRows(ui)).length).toBe(5)
+  await ui.unmount()
+})
+
+test('a background prediction during ↻ stays manual: it skips the jev cache', async ($, on) => {
+  const gate = deferred<{ isAnswered: true; text: string }>()
+  let calls = 0
+  const r = rig(on, { messages: TRANSCRIPT, next: () => (++calls === 2 ? gate.promise : { isAnswered: true, text: STEP }) })
   on('prompt.suggest', () => ({ isShown: true }))
   await ready($, r)
-  await $.prompt.suggest({ text: GUESS, origin: { kind: 'suggestion' } } as never)
+  const before = crewTurns(r).length
+  const ui = await $.ui.mount({ ...pane(86), surface: 'terminal' })
+  await ui.press({ key: 'crew-refresh' })
   await r.settle()
-}
+  await $.prompt.suggest({ text: 'commit the parser fix', origin: { kind: 'suggestion' } } as never)
+  await r.settle()
+  expect(crewTurns(r).length).toBe(before + 1)
+  gate.resolve({ isAnswered: true, text: STEP })
+  await r.settle()
+  await ui.unmount()
+})
 
-for (const surface of SURFACES) {
-  test(`${surface}: ↻ in next mode turns CREW to the current conversation and keeps the queue`, async ($, on) => {
-    const r = rig(on, { messages: TRANSCRIPT, jev: jevInTurn(JEV_FIVE, JEV_FIVE, OTHER_FIVE) })
-    await readyNext($, r, on)
-    const ui = await $.ui.mount({ ...pane(86), surface })
-    await ui.press({ key: `crew-next-${FIRST}` })
-    await ui.press({ key: 'crew-refresh' })
-    await r.settle()
-    const turn = crewTurns(r).at(-1) ?? ''
-    expect(turn.startsWith(QUERY)).toBe(true)
-    expect(turn).toContain(REPLY)
-    expect(await ui.find({ text: /next ·/ })).toBeUndefined()
-    expect(await ui.find({ text: 'queued' })).toBeDefined()
-    expect([...(await drawnRows(ui))].sort()).toEqual([FIRST, ...OTHER_FIVE.slice(0, 4)].sort())
-    await $.turn.start({ text: 'and the lexer too', turnId: 'T-after-refresh' })
-    await r.settle()
-    expect(r.submits.some(s => s.text.includes(`subagent_type: ${FIRST}`))).toBe(true)
-    await ui.unmount()
-  })
-
-  test(`${surface}: after ↻ from next mode, pressing queued takes the agent off the queue`, async ($, on) => {
-    const r = rig(on, { messages: TRANSCRIPT, jev: jevInTurn(JEV_FIVE, JEV_FIVE, OTHER_FIVE) })
-    await readyNext($, r, on)
-    const ui = await $.ui.mount({ ...pane(86), surface })
-    await ui.press({ key: `crew-next-${FIRST}` })
-    await ui.press({ key: 'crew-refresh' })
-    await r.settle()
-    await ui.press({ key: `crew-next-${FIRST}` })
-    await r.settle()
-    expect(await ui.find({ text: 'queued' })).toBeUndefined()
-    await $.turn.start({ text: 'and the lexer too', turnId: 'T-unqueued' })
-    await r.settle()
-    expect(r.submits.length).toBe(0)
-    await ui.unmount()
-  })
-
-  test(`${surface}: ↻ from next mode with no transcript still starts the queue on the guess sent word for word`, async ($, on) => {
-    const r = rig(on, { messages: [], jev: jevInTurn(JEV_FIVE, JEV_FIVE, OTHER_FIVE) })
-    await readyNext($, r, on)
-    const ui = await $.ui.mount({ ...pane(86), surface })
-    await ui.press({ key: `crew-next-${FIRST}` })
-    await ui.press({ key: 'crew-refresh' })
-    await r.settle()
-    await $.turn.start({ text: GUESS, turnId: 'T-guess-sent' })
-    await r.settle()
-    expect(r.submits.some(s => s.text.includes(`subagent_type: ${FIRST}`))).toBe(true)
-    await ui.unmount()
-  })
-
-}
+test('a grey suggestion is not carried into the prediction after the next turn', async ($, on) => {
+  const r = rig(on, { messages: TRANSCRIPT })
+  on('prompt.suggest', () => ({ isShown: true }))
+  await ready($, r)
+  await $.prompt.suggest({ text: 'commit the parser fix', origin: { kind: 'suggestion' } } as never)
+  await r.settle()
+  expect(r.nextCompletes.at(-1)?.prompt).toContain('commit the parser fix')
+  await turn($, '<agent-message from="x">report</agent-message>', 'T-handback')
+  await r.settle()
+  expect(r.nextCompletes.at(-1)?.prompt).not.toContain('commit the parser fix')
+})

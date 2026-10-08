@@ -54,6 +54,8 @@ export type Rig = {
   completes: { model: string; prompt: string; system?: string; maxTokens?: number }[]
   /** Запросы Haiku на однострочные задачи для строк CREW. */
   taskCompletes: { model: string; prompt: string; system?: string; maxTokens?: number }[]
+  /** Запросы Haiku на предсказание следующего шага. */
+  nextCompletes: { model: string; prompt: string; system?: string; maxTokens?: number }[]
   /** Запросы Haiku на разметку агентов тегами. */
   tagCompletes: { model: string; prompt: string; system?: string; maxTokens?: number }[]
   /** Запросы главной модели, отправленные через $.prompt.submit. */
@@ -75,10 +77,14 @@ export type RigOptions = {
   model?: (req: { prompt: string }) => ModelAnswer | Promise<ModelAnswer>
   /** Ответ Haiku со строками-задачами; по умолчанию не отвечает, и задач нет. */
   task?: (req: { prompt: string }) => ModelAnswer | Promise<ModelAnswer>
+  /** Ответ Haiku со следующим шагом; по умолчанию не отвечает, и шагом остаётся промпт. */
+  next?: (req: { prompt: string }) => ModelAnswer | Promise<ModelAnswer>
   /** Ответ Haiku на разметку; по умолчанию не отвечает, и тегов нет. */
   tag?: (req: { prompt: string }) => ModelAnswer | Promise<ModelAnswer>
   /** Ответ на $.prompt.submit: { drop } — отказ, исключение — сбой; по умолчанию запрос принят. */
   submit?: () => { drop: string } | void | Promise<{ drop: string } | void>
+  /** Ответ остальных команд ($.process.run кроме jev): git, bd; по умолчанию пустой вывод. */
+  cmd?: (argv: string[]) => { exitCode: number; stdout: string }
   /** Что лежит в $.store к началу теста. */
   store?: Record<string, unknown>
   /** Папка проекта сессии; по умолчанию PROJECT. */
@@ -98,6 +104,7 @@ export function rig(on: On, o: RigOptions = {}): Rig {
     runs: [],
     jevRuns: () => r.runs.filter(a => a[0] === 'jev'),
     completes: [],
+    nextCompletes: [],
     tagCompletes: [],
     taskCompletes: [],
     submits: [],
@@ -127,19 +134,22 @@ export function rig(on: On, o: RigOptions = {}): Rig {
     if (argv[0] === 'jev') {
       r.order.push('jev')
       answer = await (o.jev ?? (() => ({ exitCode: 0, stdout: jevStdout(JEV_FIVE) })))(argv)
-    }
+    } else if (o.cmd) answer = o.cmd(argv)
     if (answer === 'reject') return { deny: 'jev is not installed' }
     return { value: { exitCode: answer.exitCode, stdout: answer.stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('model.complete', async (_$, e) => {
     const isTagging = /label subagents/i.test(e.system ?? '')
     const isTasking = /one-line tasks/i.test(e.system ?? '')
-    const asked = isTagging ? r.tagCompletes : isTasking ? r.taskCompletes : r.completes
+    const isNext = /predict the next step/i.test(e.system ?? '')
+    const asked = isTagging ? r.tagCompletes : isTasking ? r.taskCompletes : isNext ? r.nextCompletes : r.completes
     asked.push(e as never)
     const silent = () => ({ isAnswered: false as const, reason: 'empty-reply' as const })
     const answer = isTagging
       ? o.tag ?? silent
-      : isTasking
+      : isNext
+        ? o.next ?? silent
+        : isTasking
         ? o.task ?? silent
         : o.model ?? (() => ({ isAnswered: true as const, text: DRAFT }))
     const a = await answer(e as never)
@@ -195,10 +205,16 @@ export const pane = (bodyColumns: number, requestId = 'crew') => ({
 
 export const SURFACES = ['terminal', 'desktop'] as const
 
-/** Offer the catalog, send one prompt, let background work settle. */
+/** One main-session turn: the prompt, then Claude's answer, which is when CREW predicts. */
+export async function turn($: Engine, text: string, turnId = `T-${text.length}`) {
+  await $.turn.start({ text, turnId })
+  await $.turn.complete({ answer: '', durationMs: 10, isAborted: false, turnId, reason: 'answer' })
+}
+
+/** Offer the catalog, run one turn, let background work settle. */
 export async function ready($: Engine, r: Rig, query = QUERY) {
   await offerAll($)
-  await $.turn.start({ text: query, turnId: `T-${query.length}` })
+  await turn($, query)
   await r.settle()
 }
 
