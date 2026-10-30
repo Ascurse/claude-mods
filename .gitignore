@@ -5,3 +5,22 @@
 .beads-credential-key
 .beads/proxieddb/
 .claude.json
+# bd worktree
+.worktrees/bd-claude-3qs/
+settings.json
+settings.local.json
+backups/
+_gc_trash/
+# skills: свои папки отслеживаются, мусор — нет
+skills/**/*.bak
+skills/**/*.bak-*
+skills/**/*.prev
+skills/**/__pycache__/
+skills/**/.venv/
+skills/**/node_modules/
+skills/**/.remember/
+# упоминают рабочие адреса — не выкладывать в открытый репозиторий
+skills/sentry-triage/SKILL.md
+skills/to-test/SKILL.md
+skills/mr-conflicts/SKILL.md
+skills/skill-stocktake/results.json

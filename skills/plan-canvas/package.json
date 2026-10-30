@@ -1,0 +1,6 @@
+{
+  "name": "plan-canvas-vendored",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Скопировано из кэша плагина ecc 2.0.0 (skills/plan-canvas + scripts/plan-canvas.js + scripts/lib). Заглушка нужна только ради строки VERSION в plan-canvas.js."
+}

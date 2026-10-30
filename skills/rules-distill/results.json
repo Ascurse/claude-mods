@@ -1,0 +1,89 @@
+{
+  "distilled_at": "2026-08-04T08:50:00Z",
+  "skills_scanned": 28,
+  "rules_scanned": 6,
+  "rules_dir": "/Users/ascurse/Developer/.claude/rules (+ ~/.claude/CLAUDE.md, frontend-rules.md, zigmund-rules.md)",
+  "candidates": {
+    "push-before-merge": {
+      "principle": "Verify no unpushed local commits before merging or integrating a branch",
+      "verdict": "Append",
+      "target": "beads-workflow.md §Batch operations",
+      "evidence": ["bd-branch-integration-merge", "to-test"],
+      "status": "skipped",
+      "skip_reason": "Not selected by user in this round"
+    },
+    "one-commit-per-bead": {
+      "principle": "Mixed working tree — one commit per bead, never `git add -A` across beads",
+      "verdict": "Revise",
+      "target": "beads-workflow.md §Task completion step 3",
+      "evidence": ["atomic-commit-split", "ship"],
+      "status": "applied"
+    },
+    "audit-batch-sizing": {
+      "principle": "Cap audit passes at ~20 items with resumable intermediate progress",
+      "verdict": "New Section",
+      "target": "implementation-standard.md §Batch sizing for audits",
+      "evidence": ["config-gc", "skill-stocktake"],
+      "status": "applied"
+    },
+    "batch-clarifying-questions": {
+      "principle": "Ask multiple clarifying questions in a single AskUserQuestion call",
+      "verdict": "Append",
+      "target": "implementation-standard.md §Process with User",
+      "evidence": ["handoff", "pack"],
+      "status": "applied"
+    },
+    "snapshot-test-determinism": {
+      "principle": "Remove non-determinism (time, RNG, animation, environment) before asserting snapshots",
+      "verdict": "New Section",
+      "target": "tdd-workflow.md §Snapshot/visual test determinism",
+      "evidence": ["flutter-quality", "doc-system"],
+      "status": "applied"
+    },
+    "verify-ci-from-config": {
+      "principle": "Verify which checks actually run against CI config and package manifest, not README/AGENTS.md",
+      "verdict": "Revise",
+      "target": "implementation-standard.md §Classify from code, not from memory",
+      "evidence": ["flutter-quality", "doc-system"],
+      "status": "applied"
+    },
+    "compositor-only-animation": {
+      "principle": "Animate only transform/opacity; no scroll-position polling; pause off-screen",
+      "verdict": "New Section",
+      "target": "~/.claude/frontend-rules.md §Animation (mirrored into ~/.codex/AGENTS.md)",
+      "evidence": ["baseline-ui", "fixing-motion-performance"],
+      "status": "applied"
+    }
+  },
+  "already_covered": [
+    "classify from code, not from title/memory (implementation-standard §Classify from code)",
+    "approval gates before code and before externally visible action (implementation-standard §Approval gates)",
+    "disposable analysis output stays out of the repo (implementation-standard §Disposable analysis output)",
+    "one bead per independent cause (beads-workflow §Create a bead)",
+    "three-dot staleness diff before merge (beads-workflow §Task completion 5)",
+    "re-run gates after each step of a batch (beads-workflow §Batch operations)",
+    "no direct push to protected branches; no rebase of a shared branch (beads-workflow §Banned)",
+    "pass a cheaper model to subagents (~/.claude/CLAUDE.md §Cost / model discipline)"
+  ],
+  "history": [
+    {
+      "distilled_at": "2026-07-31T09:15:00Z",
+      "skills_scanned": 26,
+      "applied": [
+        "approval-gates",
+        "classify-from-code",
+        "no-rebase-shared-branch",
+        "no-duplicate-audit-epics",
+        "staleness-is-not-a-verdict",
+        "new-gates-non-blocking",
+        "audit-checklist-granularity",
+        "vague-verdicts-banned-everywhere",
+        "batch-gates-per-step",
+        "no-implied-harness-actions",
+        "disposable-analysis-output",
+        "wildcard-permissions"
+      ],
+      "skipped": ["checkpoint-long-batch-work"]
+    }
+  ]
+}
