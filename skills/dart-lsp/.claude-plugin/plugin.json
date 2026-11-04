@@ -1,0 +1,10 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "dart-lsp",
+  "version": "0.1.0",
+  "description": "Dart/Flutter language server for Claude Code",
+  "author": {
+    "name": "Maximilian Shupyro",
+    "email": "68130332+Ascurse@users.noreply.github.com"
+  }
+}
