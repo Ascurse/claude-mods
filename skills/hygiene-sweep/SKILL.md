@@ -35,6 +35,8 @@ section names what is missing, so read it before trusting a zero. Selftest: `swe
 | `skill-stocktake/scripts/{lint.sh,corpus.py}`, `instructions-drift.py`, `vault-audit` if present | their one-line verdicts |
 | `ccusage` | last 7 days of spend |
 
+Runs monthly as scheduled task `hygiene-sweep-monthly`, and by hand whenever something looks off: the script does not need this skill to be invoked.
+
 Numbers live in `~/.claude/thresholds.yaml`, section `hygiene:`.
 
 Decisions live in `~/.claude/audits/hygiene-keep.tsv`: a keep record silences a candidate until its
