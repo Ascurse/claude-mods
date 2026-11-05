@@ -1,6 +1,6 @@
 ---
 name: hygiene-sweep
-description: "Прогон гигиены сетапа: параллельные read-only аудиты ~/.claude, сведение находок в один ранжированный список, удаление через config-gc."
+description: "Setup hygiene pass: free scripted sweep of ~/.claude into one ranked report, then manual audits; deletion via config-gc."
 metadata:
   origin: local
 disable-model-invocation: true
@@ -8,77 +8,72 @@ disable-model-invocation: true
 
 # hygiene-sweep
 
-Оркестратор, а не новый аудит. Свои проверки не изобретает — запускает существующие скиллы
-и сводит их выводы. Скиллы остаются самостоятельными: каждый по-прежнему вызывается отдельно.
+An orchestrator, not a new audit. The script gathers what existing tools already know and adds the
+one thing none of them does: MCP usage over time against what each server costs at startup.
+The skills stay independent: each can still be invoked on its own.
 
-## Разделение
-
-**Фаза 1 — параллельно (read-only, только отчёты).** Делегируются только скиллы **без**
-`disable-model-invocation: true` во frontmatter. Флаг проверять перед запуском:
+## Phase 1: the free sweep (scripted, no model)
 
 ```bash
-grep -L "disable-model-invocation" ~/.claude/skills/{context-budget-audit,security-scan}/SKILL.md
+python3 ~/.claude/skills/hygiene-sweep/scripts/sweep.py          # add --log to append to context-budget-log.tsv
 ```
 
-| агент | скилл | угол |
-|---|---|---|
-| `budget` | `context-budget-audit` | что грузится в каждую сессию и сколько стоит |
-| `security` | `security-scan` | инъекции, широкие permissions, MCP-ключи |
+About a minute, stdlib only, no model turns, changes no config. Run it from the project whose
+scope you want (project MCP servers depend on cwd). Writes `~/.claude/audits/hygiene-YYYY-MM-DD.{md,json}`.
+Exit code 1 means at least one source failed: the report still exists, and its "Упавшие источники"
+section names what is missing, so read it before trusting a zero. Selftest: `sweep.py --selftest`.
 
-**Фаза 2 — последовательно, руками пользователя.** Не делегируется:
-- `/skill-stocktake` и `/workspace-surface-audit` — помечены `disable-model-invocation`,
-  субагент их не вызовет и имитировать их логику ему прямо запрещено текстом ошибки;
-- `config-gc` — confirm-each-deletion, удаление только с подтверждением пользователя;
-- `rules-distill` — пишет rule-файлы, запускать только если фаза 1 дала ≥2 находки об
-  одном и том же принципе, разъехавшемся по скиллам.
+| Source | Gives |
+|---|---|
+| `claude -p /context` | cost by category, schema size by server |
+| `claude -p /skill-doctor` | skills never invoked, idle plugins |
+| `claude mcp list` | connection status |
+| `claude plugin list --json`, `plugin details` | always-on cost and components |
+| transcripts `~/.claude/projects/**/*.jsonl` | MCP, skill, command and agent calls over 30 and 90 days |
+| first attachments of the latest session | deferred-name list, server instructions, hook insertions, failed servers |
+| `settings.json`, `gc_log.md`, plugin cache | orphan hook paths, allow rules, stale versions, trash size, next review |
+| `skill-stocktake/scripts/{lint.sh,corpus.py}`, `instructions-drift.py`, `vault-audit` if present | their one-line verdicts |
+| `ccusage` | last 7 days of spend |
 
-Причина разделения: субагент не может ни держать HITL-гейт, ни вызвать
-manual-only скилл; а два агента, пишущие в `~/.claude` одновременно, затирают друг друга.
+Numbers live in `~/.claude/thresholds.yaml`, section `hygiene:`.
 
-## Запуск фазы 1
+Decisions live in `~/.claude/audits/hygiene-keep.tsv`: a keep record silences a candidate until its
+`review_after` date, so the same question is not asked every month.
 
-Оба `Agent` в **одном** сообщении. Модель задаётся явно: `claude-sonnet-5-5`
-(для `security` — тоже Sonnet, находки идут в отчёт безопасности).
+## Reading the report
 
-Бриф каждому — по шаблону, ориентировку вкладывать целиком, агент не видит эту сессию:
+- **Zero calls is evidence, not a verdict.** Transcripts cover Claude Code on this machine only.
+  A connector used on claude.ai or in Cowork looks dead here. Disabling it for Claude Code keeps it there.
+- **Passive plugins are not candidates.** Hooks, LSP and interface mods work without being called;
+  `/skill-doctor` lists them as idle anyway.
+- **Deferred schemas are not startup cost.** Under tool search a server pays for its tool names
+  and instructions. `saving` counts only that.
+- **Before cutting anything,** find out what error it prevents (CLAUDE.md, "Cost / model discipline").
 
-```
-Вызови скилл <skill> через Skill tool и выполни его в режиме "только отчёт".
-Инвентарь: ~/.claude/ (skills/, agents/, settings.json, CLAUDE.md, thresholds.yaml,
-hooks в settings.json), ~/.claude/projects/*/memory/MEMORY.md.
-НИЧЕГО не удаляй, не правь и не создавай. Только чтение.
+## Phase 2: by hand, only when phase 1 asks for it
 
-Верни максимум 8 находок, по одной строке каждая, ровно в формате:
-  <severity: blocking|warning|suggestion> | <area> | <что> | <file:line> | <действие>
+These hold confirmation gates or are `user-invocable-only` in `skillOverrides`, so a subagent cannot
+run them. `grep disable-model-invocation` does not show that: check `skillOverrides` in `settings.json`.
 
-Находка без ссылки file:line понижается на ступень (~/.claude/thresholds.yaml,
-review.downgrade_without_line_refs). Пустой результат — тоже результат: напиши
-"нет находок" и какой запрос делал.
+| Command | When |
+|---|---|
+| `/config-gc` | any accepted candidate: one at a time, confirmed, soft-deleted, logged |
+| `/context-budget-audit` | a category grew in "Дельта", or real API spend looks wrong |
+| `/skill-stocktake` | `skill_corpus` errors, or a quality pass over skill bodies |
+| `/setup-audit` | more than `setup_audit_every_days` since the date in the report: security, permissions, repeated mistakes |
+| `/doctor` | interactive fixes from Claude Code itself: installation, duplicate local CLAUDE.md, slow hooks |
+| `/workspace-surface-audit`, `/security-scan` | on demand |
+| `rules-distill` | two or more findings about one principle drifting across skills |
 
-Результатом НЕ считается: пересказ содержимого скилла, план аудита вместо находок,
-частичный проход ("проверил 3 из 20 скиллов"), отчёт о проделанной работе.
-Условие возврата: список строк в формате выше либо явное "нет находок".
-```
+## Merging
 
-## Сведение
+1. **Dedup by path.** `context-budget-audit` and `config-gc` routinely catch the same bloated file.
+2. **A match counts only if the angles differ.** The same brief to two agents is one source speaking twice.
+3. **Rank by cost per session:** what loads every time beats a one-off.
+4. **Rejected findings are listed** with a one-line reason, or moved to the keep list with a date.
 
-1. **Дедуп по `area` + пути.** `context-budget-audit` и `config-gc` штатно ловят один и тот
-   же раздутый CLAUDE.md — это одна находка, а не две.
-2. **Совпадение из двух агентов повышает приоритет**, но только если углы разные (так и
-   задумано в таблице выше). Одинаковый бриф двум агентам — один источник, высказавшийся дважды.
-3. **Ранжирование:** blocking → warning → suggestion; внутри — по стоимости за сессию
-   (то, что грузится каждый раз, выше разового).
-4. **Отклонённые находки перечисляются** с однострочным основанием, молча выкидывать нельзя.
+## Boundaries
 
-Выход — одна таблица: `severity | что | где | действие | кто чинит (config-gc / вручную / уже ок)`.
-
-## Фаза 2
-
-Пройти список сверху вниз. Удаления — через `config-gc`, по одному, с подтверждением.
-Ничего не удалять только потому, что оно старое: сначала выяснить, какую ошибку оно
-предотвращает (CLAUDE.md, «Cost / model discipline»).
-
-## Границы
-
-Не запускает: `skill-comply` (гоняет агентов, дорого — отдельно по запросу),
-`cost-utility-baseline` (месячный замер, своя каденция), `wayfinder`, `bd-priorities`.
+Applies nothing. `~/.claude/settings.json` changes are shown as a diff for the user to apply.
+Does not run: `skill-comply` (runs agents, expensive), `cost-utility-baseline` (monthly, its own cadence),
+`wayfinder`, `bd-priorities`.
