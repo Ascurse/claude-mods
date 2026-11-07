@@ -32,6 +32,7 @@ section names what is missing, so read it before trusting a zero. Selftest: `swe
 | transcripts `~/.claude/projects/**/*.jsonl` | MCP, skill, command and agent calls over 30 and 90 days |
 | first attachments of the latest session | deferred-name list, server instructions, hook insertions, failed servers |
 | `settings.json`, `gc_log.md`, plugin cache | orphan hook paths, allow rules, stale versions, trash size, next review |
+| hook scripts, global rule files, own `SKILL.md` files | links to skills the agent cannot reach, demands to invoke a user-only skill, broken skill symlinks, overrides without a skill |
 | `skill-stocktake/scripts/{lint.sh,corpus.py}`, `instructions-drift.py`, `vault-audit` if present | their one-line verdicts |
 | `ccusage` | last 7 days of spend |
 

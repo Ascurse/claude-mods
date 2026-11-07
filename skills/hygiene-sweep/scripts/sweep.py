@@ -32,6 +32,16 @@ DEFAULTS = {
 CHARS_PER_TOKEN = 4
 COMMAND_TIMEOUT_SECONDS = 90
 STARTUP_LINES_TO_READ = 120
+USER_ONLY_OVERRIDE = "user-invocable-only"
+MAX_SCANNED_FILE_BYTES = 2**20
+SKILL_NAME = r"[a-z0-9][a-z0-9_:-]*"
+# имя считается ссылкой только в явной форме, иначе «skill that» и подобная проза дают шум
+SKILL_REFERENCE = re.compile(rf"`/?({SKILL_NAME})`\*{{0,2}}\s+skills?\b|\b[Ss]kill\s+`/?({SKILL_NAME})`"
+                             rf"|\b[Ss]kill:\s+`/?({SKILL_NAME})`|\b[Ss]kill:\s+([a-z0-9]+-[a-z0-9-]+)"
+                             rf"|[Сс]килл\w*\s+`/?({SKILL_NAME})`")
+SLASH_MENTION = re.compile(r"(?<![\w/.~:-])/([a-z][a-z0-9-]+)\b(?![/.])")
+INVOKE_DEMAND = re.compile(r"\b(invoke|call|run|use|skill tool)\b|вызов|вызы|запуст|запуск", re.I)
+USER_HANDOFF = re.compile(r"user-only|user-invocable|ask the user|tell the user|you cannot|попроси|пользовател", re.I)
 
 
 def claude_bin():
@@ -307,19 +317,20 @@ def directory_mib(path):
     return round(total / 2**20)
 
 
-def scan_config(home, plugins):
-    claude = home / ".claude"
-    settings = json.loads((claude / "settings.json").read_text())
-    orphans = []
+def hook_paths(settings, home):
     for groups in (settings.get("hooks") or {}).values():
         for group in groups:
             for hook in group.get("hooks", []):
                 command = hook.get("command", "")
                 for token in re.findall(r"(?:~|\$HOME|\$\{HOME\}|/Users/[^/\s\"']+)/[^\s\"';|&]+", command):
                     token = token.rstrip(".,:)")
-                    path = re.sub(r"^(~|\$HOME|\$\{HOME\})", str(home), token)
-                    if not Path(path).exists():
-                        orphans.append(token)
+                    yield token, Path(re.sub(r"^(~|\$HOME|\$\{HOME\})", str(home), token))
+
+
+def scan_config(home, plugins):
+    claude = home / ".claude"
+    settings = json.loads((claude / "settings.json").read_text())
+    orphans = [token for token, path in hook_paths(settings, home) if not path.exists()]
     allow = (settings.get("permissions") or {}).get("allow", [])
     duplicates = sorted({rule for rule in allow if allow.count(rule) > 1})
     broad = [rule for rule in allow if re.fullmatch(r"(Bash|Read|Write|Edit)\(\*\)|Bash", rule)]
@@ -341,6 +352,75 @@ def scan_config(home, plugins):
             "plugin_cache_mib": directory_mib(cache) if cache.is_dir() else 0,
             "gc_trash_mib": directory_mib(trash) if trash.is_dir() else 0,
             "gc_next_review": next_review}
+
+
+def disables_model_invocation(skill_file):
+    head = skill_file.read_text(errors="ignore").split("---", 2)
+    return len(head) == 3 and re.search(r"^disable-model-invocation:\s*true\b", head[1], re.M) is not None
+
+
+def available_skills(claude, plugins):
+    bare, namespaced, user_only = set(), set(), set()
+    roots = [(None, claude)]
+    for item in plugins:
+        if item.get("enabled") and item.get("installPath"):
+            roots.append((item["id"].split("@")[0], Path(item["installPath"])))
+    for plugin, root in roots:
+        for skill_file in root.glob("skills/*/SKILL.md"):
+            name = skill_file.parent.name
+            bare.add(name)
+            if disables_model_invocation(skill_file):
+                user_only.add(name)
+            if plugin:
+                namespaced.add(f"{plugin}:{name}")
+        for command in root.glob("commands/*.md"):
+            bare.add(command.stem)
+            if plugin:
+                namespaced.add(f"{plugin}:{command.stem}")
+    return bare, namespaced, user_only
+
+
+def skills_named(text):
+    return {next(filter(None, match.groups())) for match in SKILL_REFERENCE.finditer(text)}
+
+
+def scan_skill_links(home, plugins):
+    # без списка плагинов каждая плагинная ссылка выглядела бы битой
+    if not plugins:
+        raise RuntimeError("нет списка плагинов, ссылки не проверить")
+    claude = home / ".claude"
+    settings = json.loads((claude / "settings.json").read_text())
+    bare, namespaced, user_only = available_skills(claude, plugins)
+    overrides = settings.get("skillOverrides") or {}
+    user_only |= {name for name, value in overrides.items() if value == USER_ONLY_OVERRIDE}
+
+    always_loaded = {path for _, path in hook_paths(settings, home) if path.is_file()}
+    always_loaded |= {claude / name for name in ("CLAUDE.md", "AGENTS.md")}
+    always_loaded |= set(claude.glob("*-rules.md")) | set(claude.glob("rules/*.md"))
+    files = always_loaded | set(claude.glob("skills/*/SKILL.md"))
+    broken, demands = set(), set()
+    for path in files:
+        if not path.is_file() or path.stat().st_size > MAX_SCANNED_FILE_BYTES:
+            continue
+        label = path.relative_to(claude) if path.is_relative_to(claude) else path
+        lines = path.read_text(errors="ignore").splitlines()
+        for index, line in enumerate(lines):
+            for name in skills_named(line) - bare - namespaced:
+                broken.add((str(label), index + 1, name))
+            if path not in always_loaded:
+                continue
+            # внутри паков скиллы зовут друг друга сами, сломана только команда из хука или правила
+            for sentence in re.split(r"(?<=[.!?])\s+", line):
+                if INVOKE_DEMAND.search(sentence) and not USER_HANDOFF.search(sentence):
+                    mentioned = skills_named(sentence) | set(SLASH_MENTION.findall(sentence))
+                    demands |= {(str(label), index + 1, name) for name in mentioned & user_only}
+
+    def entries(found):
+        return [{"file": file, "line": line, "skill": skill} for file, line, skill in sorted(found)]
+
+    links = sorted(path.name for path in claude.glob("skills/*") if path.is_symlink() and not path.exists())
+    return {"broken_refs": entries(broken), "user_only_demands": entries(demands), "broken_symlinks": links,
+            "dangling_overrides": sorted(set(overrides) - bare - namespaced), "files_scanned": len(files)}
 
 
 def last_line(text, pattern=None):
@@ -648,14 +728,23 @@ def render(report, thresholds):
         out += ["## Дубли в листинге", "", "Скилл виден и как свой, и как плагинный: "
                 + ", ".join(f"{d['name']} (~{d['tokens']})" for d in report["skill_duplicates"]), ""]
 
-    config, helpers = report.get("config") or {}, report.get("helpers") or {}
-    if config or helpers:
+    config, helpers, links = report.get("config") or {}, report.get("helpers") or {}, report.get("skill_links") or {}
+
+    def located(items):
+        return ", ".join(f"{item['file']}:{item['line']} {item['skill']}" for item in items) or "нет"
+
+    if config or helpers or links:
         out += ["## Бесплатные проверки", ""]
         if config:
             out += [f"- Хуки с несуществующим путём: {config['orphan_hook_paths'] or 'нет'}",
                     f"- Allow-правил {config['allow_rules']}, дублей {len(config['duplicate_allow'])}, широких: {config['broad_allow'] or 'нет'}",
                     f"- Кэш плагинов {config['plugin_cache_mib']} МиБ, неактивных версий {config['stale_plugin_versions']}; `_gc_trash` {config['gc_trash_mib']} МиБ",
                     f"- Следующий обзор config-gc: {config['gc_next_review'] or 'не записан'}"]
+        if links:
+            out += [f"- Ссылки на скиллы, которых агент не найдёт: {located(links['broken_refs'])}",
+                    f"- Требование вызвать user-only скилл: {located(links['user_only_demands'])}",
+                    f"- Битые симлинки в skills: {links['broken_symlinks'] or 'нет'}; "
+                    f"skillOverrides без установленного скилла: {len(links['dangling_overrides'])}"]
         out += [f"- {key}: {value}" for key, value in helpers.items()]
         spend = report.get("spend")
         if spend:
@@ -739,6 +828,7 @@ def collect(args, today, thresholds):
         "transcripts": lambda: scan_transcripts(root, today, thresholds["usage_window_days"], thresholds["history_days"]),
         "startup": lambda: startup_snapshot(root),
         "config": lambda: scan_config(home, results.get("plugins") or []),
+        "skill_links": lambda: scan_skill_links(home, results.get("plugins") or []),
         "helpers": lambda: scan_helpers(home, os.getcwd()),
         "spend": lambda: spend_week(today),
     }
@@ -796,7 +886,8 @@ def main(argv=None):
         "startup": snapshot, "servers": servers, "servers_outside": outside, "plugins": plugins,
         "skill_doctor": results.get("skill_doctor"), "skill_conflicts": conflicts,
         "skill_duplicates": find_duplicate_skills(results.get("skill_doctor")), "candidates": candidates,
-        "keep_expired": keep_expired, "config": results.get("config"), "helpers": results.get("helpers"),
+        "keep_expired": keep_expired, "config": results.get("config"), "skill_links": results.get("skill_links"),
+        "helpers": results.get("helpers"),
         "spend": results.get("spend"),
         "usage_meta": {k: usage[k] for k in ("files", "bytes", "oldest")} if usage else None,
     }
@@ -917,6 +1008,43 @@ def selftest():
         finally:
             os.environ.update(saved)
         check("сбой изолирован", sources["context"]["status"] == "failed" and "transcripts" in sources)
+
+    with tempfile.TemporaryDirectory() as temp:
+        home = Path(temp).resolve()
+        claude = home / ".claude"
+        (claude / "hooks").mkdir(parents=True)
+        (claude / "skills/handoff").mkdir(parents=True)
+        (claude / "skills/good").mkdir()
+        (claude / "skills/manual").mkdir()
+        (claude / "skills/gone").symlink_to(home / "nowhere")
+        (home / "plug/skills/tool").mkdir(parents=True)
+        (home / "off/skills/hidden").mkdir(parents=True)
+        for skill_file in ("skills/handoff/SKILL.md", "skills/good/SKILL.md"):
+            (claude / skill_file).write_text("---\nname: x\n---\n")
+        (claude / "skills/manual/SKILL.md").write_text("---\ndisable-model-invocation: true\n---\n")
+        (home / "plug/skills/tool/SKILL.md").write_text("---\nname: tool\n---\n")
+        (home / "off/skills/hidden/SKILL.md").write_text("---\nname: hidden\n---\n")
+        (claude / "hooks/nudge.py").write_text('MSG = "invoke /handoff now"\nOK = "ask the user to run /handoff"\n'
+                                               'TEXT = "the /handoff path is mentioned"\nALSO = "use the `manual` skill"\n')
+        (claude / "CLAUDE.md").write_text("Use the `missing-one` skill.\nUse the **`plug:tool`** skill.\n"
+                                          "Use the `good` skill and `plug:absent` skill.\nA skill that works.\n"
+                                          "Use the `off:hidden` skill.\n")
+        (claude / "settings.json").write_text(json.dumps({
+            "skillOverrides": {"handoff": USER_ONLY_OVERRIDE, "ghost": USER_ONLY_OVERRIDE},
+            "hooks": {"Stop": [{"hooks": [{"command": "python3 $HOME/.claude/hooks/nudge.py"}]}]}}))
+        plugins = [{"id": "plug@m", "enabled": True, "installPath": str(home / "plug")},
+                   {"id": "off@m", "enabled": False, "installPath": str(home / "off")}]
+        links = scan_skill_links(home, plugins)
+        check("битые ссылки", [(i["line"], i["skill"]) for i in links["broken_refs"]]
+              == [(1, "missing-one"), (3, "plug:absent"), (5, "off:hidden")])
+        check("требование user-only", [(i["line"], i["skill"]) for i in links["user_only_demands"]]
+              == [(1, "handoff"), (4, "manual")])
+        check("симлинк и override", links["broken_symlinks"] == ["gone"] and links["dangling_overrides"] == ["ghost"])
+        try:
+            scan_skill_links(home, [])
+            errors.append("без плагинов ссылки судятся вслепую")
+        except RuntimeError:
+            pass
 
     if errors:
         print("selftest: НЕ пройдено:", "; ".join(errors))
