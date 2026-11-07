@@ -85,7 +85,7 @@ When trimming context/config for cost (rules, skills, CLAUDE.md/AGENTS.md sectio
 
 ## Workflow — startup check (template-bridge)
 
-Before starting ANY task, invoke the **`template-bridge:unified-workflow`** skill via the Skill tool and follow it. It is the single entry point: it orchestrates the underlying Superpowers skills plus Beads task tracking and the template catalog.
+Before a task that changes code, invoke the **`template-bridge:unified-workflow`** skill via the Skill tool and follow it. Questions, research and one-line fixes go straight to the work. It is the single entry point: it orchestrates the underlying Superpowers skills plus Beads task tracking and the template catalog.
 
 The canonical step-by-step flow (epic → brainstorm → plan → sub-tasks → isolate → TDD → review → verify → finish → close) lives in the `template-bridge:unified-workflow` skill and, for Beads specifics, in a project's `.claude/rules/beads-workflow.md`. Don't restate it here — follow those.
 
